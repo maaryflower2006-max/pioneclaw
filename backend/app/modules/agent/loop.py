@@ -717,6 +717,9 @@ class AgentLoop:
                         if tool_handler:
                             await tool_handler.notify_start(tc_args)
 
+                        # SSE 实时通知：工具开始执行
+                        yield f"<!--TOOL_START:{json.dumps({'name': tc_name}, ensure_ascii=False)}-->"
+
                         # 插件事件：工具开始
                         await self._emit_plugin_event("tool_start", {
                             "trace_id": self.request_trace_id,
@@ -801,6 +804,9 @@ class AgentLoop:
                             # 记录工具调用结果
                             self.last_tool_results[tc_name] = result
 
+                            # SSE 实时通知：工具执行完成
+                            yield f"<!--TOOL_RESULT:{json.dumps({'name': tc_name, 'result': result}, ensure_ascii=False)}-->"
+
                             # WebSocket 通知：工具调用成功
                             if tool_handler:
                                 await tool_handler.notify_complete(result)
@@ -840,6 +846,9 @@ class AgentLoop:
                             # 工具执行失败
                             error_msg = f"Tool execution failed after {self.max_retries} attempts: {str(last_error)}"
                             logger.error(f"Tool {tc_name} failed permanently: {error_msg}")
+
+                            # SSE 实时通知：工具执行错误
+                            yield f"<!--TOOL_ERROR:{json.dumps({'name': tc_name, 'error': str(last_error)}, ensure_ascii=False)}-->"
 
                             # WebSocket 通知：工具错误
                             if tool_handler:

@@ -625,6 +625,9 @@ async def react_chat_stream(
     )
 
     thinking_pattern = re.compile(r'<!--THINKING:(.*?)-->', re.DOTALL)
+    tool_start_pattern = re.compile(r'<!--TOOL_START:(.*?)-->')
+    tool_result_pattern = re.compile(r'<!--TOOL_RESULT:(.*?)-->', re.DOTALL)
+    tool_error_pattern = re.compile(r'<!--TOOL_ERROR:(.*?)-->', re.DOTALL)
 
     # 设执行上下文（Runner 工具需要知道当前用户）
     from app.core.execution_context import current_user_id
@@ -677,8 +680,31 @@ async def react_chat_stream(
                     thinking_buffer += thinking_content
                     yield f"data: {json.dumps({'type': 'thinking', 'content': thinking_content}, ensure_ascii=False)}\n\n"
 
+                # 提取工具事件（实时通知前端工具执行状态）
+                for match in tool_start_pattern.finditer(chunk):
+                    try:
+                        tool_data = json.loads(match.group(1))
+                        yield f"data: {json.dumps({'type': 'tool_start', 'name': tool_data.get('name', '')}, ensure_ascii=False)}\n\n"
+                    except json.JSONDecodeError:
+                        pass
+                for match in tool_result_pattern.finditer(chunk):
+                    try:
+                        tool_data = json.loads(match.group(1))
+                        yield f"data: {json.dumps({'type': 'tool_result', 'name': tool_data.get('name', ''), 'result': tool_data.get('result', '')}, ensure_ascii=False)}\n\n"
+                    except json.JSONDecodeError:
+                        pass
+                for match in tool_error_pattern.finditer(chunk):
+                    try:
+                        tool_data = json.loads(match.group(1))
+                        yield f"data: {json.dumps({'type': 'tool_error', 'name': tool_data.get('name', ''), 'error': tool_data.get('error', '')}, ensure_ascii=False)}\n\n"
+                    except json.JSONDecodeError:
+                        pass
+
                 # 提取非思考内容
                 clean = thinking_pattern.sub("", chunk)
+                clean = tool_start_pattern.sub("", clean)
+                clean = tool_result_pattern.sub("", clean)
+                clean = tool_error_pattern.sub("", clean)
 
                 # 检测迭代边界：[思考中...] 表示新一轮迭代开始
                 is_boundary = "[思考中...]" in clean
@@ -701,11 +727,6 @@ async def react_chat_stream(
                     yield f"data: {json.dumps({'type': 'content', 'content': clean}, ensure_ascii=False)}\n\n"
 
             latency_ms = int((time.time() - start_time) * 1000)
-
-            # 发送工具调用结果
-            if agent_loop.last_tool_results:
-                for name, result in agent_loop.last_tool_results.items():
-                    yield f"data: {json.dumps({'type': 'tool_result', 'name': name, 'result': result}, ensure_ascii=False)}\n\n"
 
             # 记录 API 用量
             try:

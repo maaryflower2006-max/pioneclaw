@@ -160,7 +160,11 @@
                           <component :is="getToolIcon(tc.name)" />
                         </el-icon>
                         <span class="tool-name">{{ formatToolName(tc.name) }}</span>
-                        <span v-if="tc.result" class="tool-result-summary">{{ tc.result.substring(0, 60) }}{{ tc.result.length > 60 ? '…' : '' }}</span>
+                        <span v-if="tc.loading" class="tool-loading">
+                          <span class="loading-dots"><span></span><span></span><span></span></span>
+                          <span class="loading-text">执行中...</span>
+                        </span>
+                        <span v-else-if="tc.result" class="tool-result-summary">{{ tc.result.substring(0, 60) }}{{ tc.result.length > 60 ? '…' : '' }}</span>
                       </div>
                       <div v-show="isToolCallExpanded(index, tcIndex)" class="tool-result">{{ tc.result }}</div>
                     </div>
@@ -1118,9 +1122,31 @@ async function sendMessage() {
                   contentBuffer = ''
                   streamingMsg.content = ''
                   break
+                case 'tool_start':
+                  if (!streamingMsg.toolCalls) streamingMsg.toolCalls = []
+                  streamingMsg.toolCalls.push({ name: data.name, result: '', loading: true })
+                  scrollToBottom()
+                  break
                 case 'tool_result':
                   if (!streamingMsg.toolCalls) streamingMsg.toolCalls = []
-                  streamingMsg.toolCalls.push({ name: data.name, result: data.result })
+                  const existing = streamingMsg.toolCalls.find((tc: any) => tc.name === data.name && tc.loading)
+                  if (existing) {
+                    existing.result = data.result
+                    existing.loading = false
+                  } else {
+                    streamingMsg.toolCalls.push({ name: data.name, result: data.result })
+                  }
+                  scrollToBottom()
+                  break
+                case 'tool_error':
+                  if (!streamingMsg.toolCalls) streamingMsg.toolCalls = []
+                  const errTc = streamingMsg.toolCalls.find((tc: any) => tc.name === data.name && tc.loading)
+                  if (errTc) {
+                    errTc.result = `⚠️ ${data.error}`
+                    errTc.loading = false
+                  } else {
+                    streamingMsg.toolCalls.push({ name: data.name, result: `⚠️ ${data.error}` })
+                  }
                   scrollToBottom()
                   break
                 case 'done':
@@ -1964,6 +1990,36 @@ onUnmounted(() => {
                     text-overflow: ellipsis;
                     white-space: nowrap;
                     font-family: 'JetBrains Mono', 'Fira Code', monospace;
+                }
+
+                .tool-loading {
+                    margin-left: 8px;
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                    font-size: 12px;
+                    color: var(--pc-primary);
+
+                    .loading-text {
+                        font-size: 12px;
+                    }
+
+                    .loading-dots {
+                        display: flex;
+                        gap: 3px;
+
+                        span {
+                            width: 4px;
+                            height: 4px;
+                            background: var(--pc-primary);
+                            border-radius: 50%;
+                            animation: typing 1.4s infinite ease-in-out;
+
+                            &:nth-child(1) { animation-delay: 0s; }
+                            &:nth-child(2) { animation-delay: 0.2s; }
+                            &:nth-child(3) { animation-delay: 0.4s; }
+                        }
+                    }
                 }
             }
 
