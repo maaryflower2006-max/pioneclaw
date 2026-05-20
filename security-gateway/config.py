@@ -2,7 +2,10 @@
 Security Gateway 配置
 """
 
+from pathlib import Path
 from pydantic_settings import BaseSettings
+
+_ENV_FILE = Path(__file__).parent / ".env"
 
 
 class Settings(BaseSettings):
@@ -36,13 +39,16 @@ class Settings(BaseSettings):
     # 审计日志保留天数
     LOG_RETENTION_DAYS: int = 180
 
+    # 管理接口安全
+    ADMIN_API_KEY: str = ""
+
     # 服务端口
     PORT: int = 8001
     HOST: str = "0.0.0.0"
 
     class Config:
         env_prefix = "SG_"
-        env_file = ".env"
+        env_file = str(_ENV_FILE)
 
 
 settings = Settings()

@@ -138,7 +138,7 @@ class AuditService:
                 "summary": {...}
             }
         """
-        from sqlalchemy import func, select, desc, cast, String
+        from sqlalchemy import func, select, desc, cast, String, Integer
         from models.security import SecurityAuditLog
 
         # 时间范围

@@ -256,6 +256,106 @@
           />
         </el-card>
       </el-tab-pane>
+
+      <!-- 配置管理 -->
+      <el-tab-pane label="配置管理" name="config">
+        <el-card>
+          <template #header>
+            <div class="card-header">
+              <span>引擎与模型配置</span>
+              <el-button type="primary" @click="saveConfig">
+                <el-icon><Check /></el-icon> 保存配置
+              </el-button>
+            </div>
+          </template>
+
+          <el-form :model="configForm" label-width="160px" style="max-width: 600px">
+            <el-divider>引擎开关</el-divider>
+            <el-form-item label="启用词引擎">
+              <el-switch v-model="configForm.enable_word_engine" />
+            </el-form-item>
+            <el-form-item label="启用正则引擎">
+              <el-switch v-model="configForm.enable_regex_engine" />
+            </el-form-item>
+            <el-form-item label="启用模型引擎">
+              <el-switch v-model="configForm.enable_model_engine" />
+            </el-form-item>
+
+            <el-divider>模型引擎 LLM 增强（可选）</el-divider>
+            <el-form-item label="启用 LLM 增强">
+              <el-switch v-model="configForm.enable_model_llm" />
+            </el-form-item>
+
+            <el-form-item label="平台 AI 配置" v-show="configForm.enable_model_llm">
+              <el-select
+                v-model="configForm.ai_config_id"
+                @change="onAiConfigChange"
+                clearable
+                placeholder="手动输入（不引用平台配置）"
+                style="width: 100%"
+                :loading="aiConfigLoading"
+              >
+                <el-option
+                  v-for="cfg in aiConfigList"
+                  :key="cfg.id"
+                  :label="cfg.display_name || cfg.name"
+                  :value="cfg.id"
+                />
+              </el-select>
+              <div class="form-tip">选择平台已有配置可自动填充 URL/模型/Key，也可留空手动输入</div>
+            </el-form-item>
+
+            <el-form-item label="Base URL" v-show="configForm.enable_model_llm">
+              <el-input
+                v-model="configForm.model_engine_llm_url"
+                placeholder="https://your-api.com/v1/chat/completions"
+              />
+            </el-form-item>
+            <el-form-item label="模型 ID" v-show="configForm.enable_model_llm">
+              <el-input
+                v-model="configForm.model_engine_llm_model"
+                placeholder="模型 ID"
+              />
+            </el-form-item>
+            <el-form-item label="API Key" v-show="configForm.enable_model_llm">
+              <el-input
+                v-model="configForm.model_engine_llm_api_key"
+                placeholder="无认证可留空"
+                type="password"
+                show-password
+              />
+            </el-form-item>
+            <el-form-item label="超时（秒）" v-show="configForm.enable_model_llm">
+              <el-input-number v-model="configForm.model_engine_llm_timeout" :min="1" :max="30" />
+            </el-form-item>
+            <el-form-item v-show="configForm.enable_model_llm">
+              <el-button
+                type="info"
+                :loading="testingLlm"
+                @click="testLlmConnection"
+                :disabled="!configForm.model_engine_llm_url"
+              >
+                <el-icon><Connection /></el-icon> 测试连接
+              </el-button>
+              <el-text v-if="llmTestResult" :type="llmTestResult.success ? 'success' : 'danger'" class="ml-3">
+                {{ llmTestResult.message }}
+                <span v-if="llmTestResult.latency_ms">({{ llmTestResult.latency_ms }}ms)</span>
+              </el-text>
+            </el-form-item>
+
+            <el-divider>其他</el-divider>
+            <el-form-item label="降级放行（Fail Open）">
+              <el-switch v-model="configForm.fail_open" />
+              <template #append>
+                <el-text type="info">安全网关异常时放行请求</el-text>
+              </template>
+            </el-form-item>
+            <el-form-item label="日志保留天数">
+              <el-input-number v-model="configForm.log_retention_days" :min="1" :max="3650" />
+            </el-form-item>
+          </el-form>
+        </el-card>
+      </el-tab-pane>
     </el-tabs>
 
     <!-- 创建/编辑词对话框 -->
@@ -292,13 +392,14 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh } from '@element-plus/icons-vue'
+import { Plus, Refresh, Check, Connection } from '@element-plus/icons-vue'
 import { use } from 'echarts/core'
 import { LineChart, BarChart } from 'echarts/charts'
 import { TitleComponent, TooltipComponent, LegendComponent, GridComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import VChart from 'vue-echarts'
 import { securityGatewayApi, type FilterResult, type WordItem, type AuditLogItem } from '@/api/security_gateway'
+import { api } from '@/api'
 
 use([LineChart, BarChart, TitleComponent, TooltipComponent, LegendComponent, GridComponent, CanvasRenderer])
 
@@ -515,6 +616,121 @@ const loadAuditLogs = async () => {
   }
 }
 
+// 配置管理
+const configForm = reactive({
+  enable_word_engine: true,
+  enable_regex_engine: true,
+  enable_model_engine: true,
+  enable_model_llm: false,
+  ai_config_id: null as number | null,
+  model_engine_llm_url: '',
+  model_engine_llm_model: 'qwen2.5:1.5b',
+  model_engine_llm_api_key: '',
+  model_engine_llm_timeout: 3,
+  fail_open: true,
+  log_retention_days: 180,
+})
+const configLoading = ref(false)
+
+// 平台 AI 配置列表
+const aiConfigList = ref<any[]>([])
+const aiConfigLoading = ref(false)
+const aiConfigMap = ref<Record<number, any>>({})
+
+const loadAiConfigs = async () => {
+  aiConfigLoading.value = true
+  try {
+    const { data } = await api.get('/ai-configs')
+    aiConfigList.value = data || []
+    // 构建 id -> config 映射
+    const map: Record<number, any> = {}
+    for (const cfg of aiConfigList.value) {
+      map[cfg.id] = cfg
+    }
+    aiConfigMap.value = map
+  } catch (e: any) {
+    ElMessage.error('加载平台 AI 配置失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    aiConfigLoading.value = false
+  }
+}
+
+const loadConfig = async () => {
+  try {
+    const { data } = await securityGatewayApi.getConfig()
+    Object.assign(configForm, data)
+  } catch (e: any) {
+    ElMessage.error('加载配置失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+const saveConfig = async () => {
+  configLoading.value = true
+  try {
+    await securityGatewayApi.updateConfig(configForm)
+    ElMessage.success('配置已保存')
+  } catch (e: any) {
+    ElMessage.error('保存配置失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    configLoading.value = false
+  }
+}
+
+const onAiConfigChange = (configId: number | null) => {
+  llmTestResult.value = null
+  if (!configId) return
+  const cfg = aiConfigMap.value[configId]
+  if (!cfg) return
+  // 自动填充 URL/模型
+  if (cfg.base_url) {
+    configForm.model_engine_llm_url = cfg.base_url
+  }
+  if (cfg.model_name) {
+    configForm.model_engine_llm_model = cfg.model_name
+  }
+  // API Key 从平台获取明文（需要管理员权限）
+  loadAiConfigApiKey(configId)
+}
+
+const loadAiConfigApiKey = async (configId: number) => {
+  try {
+    const { data } = await api.get(`/ai-configs/${configId}/api-key`)
+    if (data.api_key) {
+      configForm.model_engine_llm_api_key = data.api_key
+    }
+  } catch (e: any) {
+    // 非管理员可能无权查看，静默失败
+    console.warn('无法获取平台配置 API Key:', e.message)
+  }
+}
+
+// LLM 测试
+const testingLlm = ref(false)
+const llmTestResult = ref<any>(null)
+
+const testLlmConnection = async () => {
+  testingLlm.value = true
+  llmTestResult.value = null
+  try {
+    const { data } = await securityGatewayApi.testLlmConnection({
+      url: configForm.model_engine_llm_url,
+      model: configForm.model_engine_llm_model,
+      api_key: configForm.model_engine_llm_api_key,
+      timeout: configForm.model_engine_llm_timeout,
+    })
+    llmTestResult.value = data
+    if (data.success) {
+      ElMessage.success(data.message)
+    } else {
+      ElMessage.error(data.message)
+    }
+  } catch (e: any) {
+    ElMessage.error('测试失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    testingLlm.value = false
+  }
+}
+
 // 辅助函数
 const actionLabel = (action: string) => {
   const map: Record<string, string> = {
@@ -603,6 +819,8 @@ onMounted(() => {
   loadDashboard()
   loadWords()
   loadAuditLogs()
+  loadAiConfigs()
+  loadConfig()
 })
 </script>
 
@@ -636,6 +854,12 @@ onMounted(() => {
 
 .ml-2 {
   margin-left: 8px;
+}
+
+.form-tip {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-top: 4px;
 }
 
 .stat-card {

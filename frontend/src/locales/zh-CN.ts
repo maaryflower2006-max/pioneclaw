@@ -72,6 +72,7 @@ export default {
     aiManagement: '平台管理',
     extensionManagement: '扩展管理',
     systemOps: '系统运维',
+    securityGateway: '安全网关',
   },
   navGroups: {
     core: '核心功能',

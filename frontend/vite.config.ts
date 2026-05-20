@@ -26,6 +26,11 @@ export default defineConfig({
           })
         },
       },
+      '/sg-api': {
+        target: 'http://localhost:8002',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/sg-api/, ''),
+      },
     },
   },
 })

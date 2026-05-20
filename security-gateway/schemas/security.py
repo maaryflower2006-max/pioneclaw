@@ -94,10 +94,23 @@ class AuditLogListResponse(BaseModel):
 class SecurityGatewayConfig(BaseModel):
     enable_word_engine: bool = True
     enable_regex_engine: bool = True
-    enable_model_engine: bool = False
+    enable_model_engine: bool = True
+    enable_model_llm: bool = False
+    ai_config_id: Optional[int] = None
+    model_engine_llm_url: str = ""
+    model_engine_llm_model: str = "qwen2.5:1.5b"
+    model_engine_llm_api_key: str = ""
+    model_engine_llm_timeout: float = 3.0
     word_engine_cache_ttl: int = 60
     fail_open: bool = True
     log_retention_days: int = 180
+
+
+class TestLLMRequest(BaseModel):
+    url: str
+    model: str = ""
+    api_key: str = ""
+    timeout: float = 5.0
 
 
 class DashboardStatsResponse(BaseModel):

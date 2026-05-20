@@ -110,7 +110,7 @@ const routes: RouteRecordRaw[] = [
         path: 'security-gateway',
         name: 'SecurityGateway',
         component: () => import('@/views/SecurityGateway.vue'),
-        meta: { title: 'Security Gateway', icon: 'Lock', group: 'admin', roles: ['super_admin'] }
+        meta: { title: 'Security Gateway', icon: 'Lock', group: 'admin', roles: ['super_admin', 'org_admin'] }
       }
     ]
   }

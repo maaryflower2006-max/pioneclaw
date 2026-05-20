@@ -72,6 +72,7 @@ export default {
     aiManagement: 'Platform',
     extensionManagement: 'Extensions',
     systemOps: 'System Ops',
+    securityGateway: 'Security Gateway',
   },
   navGroups: {
     core: 'Core',

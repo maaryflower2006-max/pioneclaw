@@ -1,8 +1,17 @@
 import axios from 'axios'
 
 const sgApi = axios.create({
-  baseURL: import.meta.env.VITE_SECURITY_GATEWAY_URL || 'http://localhost:8001',
+  baseURL: import.meta.env.VITE_SECURITY_GATEWAY_URL || '/sg-api',
   timeout: 10000,
+})
+
+// 自动附加 X-API-Key（如配置了安全网关管理密钥）
+sgApi.interceptors.request.use((config) => {
+  const key = import.meta.env.VITE_SG_ADMIN_API_KEY
+  if (key) {
+    config.headers['X-API-Key'] = key
+  }
+  return config
 })
 
 export interface FilterResult {
@@ -102,6 +111,16 @@ export const securityGatewayApi = {
   // 获取配置
   getConfig() {
     return sgApi.get('/api/v1/admin/config')
+  },
+
+  // 更新配置
+  updateConfig(data: any) {
+    return sgApi.put('/api/v1/admin/config', data)
+  },
+
+  // 测试 LLM 连接
+  testLlmConnection(data: { url: string; model: string; api_key: string; timeout: number }) {
+    return sgApi.post('/api/v1/admin/config/test-llm', data)
   },
 
   // 看板统计
