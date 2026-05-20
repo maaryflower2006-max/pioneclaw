@@ -285,36 +285,53 @@
             <el-form-item label="启用 LLM 增强">
               <el-switch v-model="configForm.enable_model_llm" />
             </el-form-item>
-            <el-form-item label="LLM API 地址">
+
+            <el-form-item label="供应商" v-show="configForm.enable_model_llm">
+              <el-select v-model="llmProvider" @change="onProviderChange" style="width: 100%">
+                <el-option label="OpenAI" value="openai" />
+                <el-option label="Azure OpenAI" value="azure" />
+                <el-option label="Ollama (本地)" value="ollama" />
+                <el-option label="Anthropic" value="anthropic" />
+                <el-option label="Custom (OpenAI Compatible)" value="custom" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="Base URL" v-show="configForm.enable_model_llm">
               <el-input
                 v-model="configForm.model_engine_llm_url"
-                placeholder="例如：http://localhost:11434/v1/chat/completions"
-                :disabled="!configForm.enable_model_llm"
+                :placeholder="llmUrlPlaceholder"
               />
+              <div class="form-tip">{{ llmUrlTip }}</div>
             </el-form-item>
-            <el-form-item label="LLM 模型名">
+            <el-form-item label="模型 ID" v-show="configForm.enable_model_llm">
               <el-input
                 v-model="configForm.model_engine_llm_model"
-                placeholder="例如：qwen2.5:1.5b"
-                :disabled="!configForm.enable_model_llm"
+                :placeholder="llmModelPlaceholder"
               />
             </el-form-item>
-            <el-form-item label="LLM API Key">
+            <el-form-item label="API Key" v-show="configForm.enable_model_llm">
               <el-input
                 v-model="configForm.model_engine_llm_api_key"
                 placeholder="无认证可留空"
                 type="password"
                 show-password
-                :disabled="!configForm.enable_model_llm"
               />
             </el-form-item>
-            <el-form-item label="LLM 超时（秒）">
-              <el-input-number
-                v-model="configForm.model_engine_llm_timeout"
-                :min="1"
-                :max="30"
-                :disabled="!configForm.enable_model_llm"
-              />
+            <el-form-item label="超时（秒）" v-show="configForm.enable_model_llm">
+              <el-input-number v-model="configForm.model_engine_llm_timeout" :min="1" :max="30" />
+            </el-form-item>
+            <el-form-item v-show="configForm.enable_model_llm">
+              <el-button
+                type="info"
+                :loading="testingLlm"
+                @click="testLlmConnection"
+                :disabled="!configForm.model_engine_llm_url"
+              >
+                <el-icon><Connection /></el-icon> 测试连接
+              </el-button>
+              <el-text v-if="llmTestResult" :type="llmTestResult.success ? 'success' : 'danger'" class="ml-3">
+                {{ llmTestResult.message }}
+                <span v-if="llmTestResult.latency_ms">({{ llmTestResult.latency_ms }}ms)</span>
+              </el-text>
             </el-form-item>
 
             <el-divider>其他</el-divider>
@@ -366,7 +383,7 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Check } from '@element-plus/icons-vue'
+import { Plus, Refresh, Check, Connection } from '@element-plus/icons-vue'
 import { use } from 'echarts/core'
 import { LineChart, BarChart } from 'echarts/charts'
 import { TitleComponent, TooltipComponent, LegendComponent, GridComponent } from 'echarts/components'
@@ -625,6 +642,95 @@ const saveConfig = async () => {
   }
 }
 
+// LLM 供应商配置
+const llmProvider = ref('custom')
+const testingLlm = ref(false)
+const llmTestResult = ref<any>(null)
+
+const PROVIDER_URLS: Record<string, string> = {
+  openai: 'https://api.openai.com/v1/chat/completions',
+  azure: '',
+  ollama: 'http://localhost:11434/v1/chat/completions',
+  anthropic: 'https://api.anthropic.com/v1/messages',
+  custom: '',
+}
+
+const PROVIDER_MODELS: Record<string, string> = {
+  openai: 'gpt-4o',
+  azure: 'gpt-4',
+  ollama: 'qwen2.5:1.5b',
+  anthropic: 'claude-3-sonnet-20240229',
+  custom: '',
+}
+
+const llmUrlPlaceholder = computed(() => {
+  const map: Record<string, string> = {
+    openai: 'https://api.openai.com/v1/chat/completions',
+    azure: 'https://your-resource.openai.azure.com/openai/deployments/...',
+    ollama: 'http://localhost:11434/v1/chat/completions',
+    anthropic: 'https://api.anthropic.com/v1/messages',
+    custom: 'https://your-api.com/v1/chat/completions',
+  }
+  return map[llmProvider.value] || 'https://...'
+})
+
+const llmUrlTip = computed(() => {
+  const map: Record<string, string> = {
+    openai: 'OpenAI 官方 API 地址',
+    azure: 'Azure OpenAI Endpoint，需包含 deployment 和 api-version',
+    ollama: 'Ollama 本地服务地址，默认端口 11434',
+    anthropic: 'Anthropic API 地址（需确保为 OpenAI-compatible 代理）',
+    custom: '自定义 OpenAI-compatible API 地址',
+  }
+  return map[llmProvider.value] || ''
+})
+
+const llmModelPlaceholder = computed(() => {
+  const map: Record<string, string> = {
+    openai: 'gpt-4o, gpt-4o-mini, gpt-3.5-turbo',
+    azure: 'your-deployment-name',
+    ollama: 'qwen2.5:1.5b, llama3.1:8b',
+    anthropic: 'claude-3-sonnet-20240229',
+    custom: '模型 ID',
+  }
+  return map[llmProvider.value] || '模型 ID'
+})
+
+const onProviderChange = (val: string) => {
+  llmTestResult.value = null
+  const defaultUrl = PROVIDER_URLS[val]
+  if (defaultUrl && !configForm.model_engine_llm_url) {
+    configForm.model_engine_llm_url = defaultUrl
+  }
+  const defaultModel = PROVIDER_MODELS[val]
+  if (defaultModel && !configForm.model_engine_llm_model) {
+    configForm.model_engine_llm_model = defaultModel
+  }
+}
+
+const testLlmConnection = async () => {
+  testingLlm.value = true
+  llmTestResult.value = null
+  try {
+    const { data } = await securityGatewayApi.testLlmConnection({
+      url: configForm.model_engine_llm_url,
+      model: configForm.model_engine_llm_model,
+      api_key: configForm.model_engine_llm_api_key,
+      timeout: configForm.model_engine_llm_timeout,
+    })
+    llmTestResult.value = data
+    if (data.success) {
+      ElMessage.success(data.message)
+    } else {
+      ElMessage.error(data.message)
+    }
+  } catch (e: any) {
+    ElMessage.error('测试失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    testingLlm.value = false
+  }
+}
+
 // 辅助函数
 const actionLabel = (action: string) => {
   const map: Record<string, string> = {
@@ -747,6 +853,12 @@ onMounted(() => {
 
 .ml-2 {
   margin-left: 8px;
+}
+
+.form-tip {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-top: 4px;
 }
 
 .stat-card {

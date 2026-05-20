@@ -63,6 +63,66 @@ async def update_config(data: SecurityGatewayConfig):
     return SecurityGatewayConfig(**_get_merged_config())
 
 
+@router.post("/config/test-llm")
+async def test_llm_connection(data: dict):
+    """测试 LLM 连接是否可用
+
+    接收临时配置参数，尝试发送一个简单请求验证连通性。
+    """
+    import time
+    import httpx
+
+    url = data.get("url", "")
+    model = data.get("model", "")
+    api_key = data.get("api_key", "")
+    timeout = float(data.get("timeout", 5.0))
+
+    if not url:
+        return {"success": False, "message": "LLM API 地址不能为空"}
+
+    start = time.time()
+    try:
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
+            resp = await client.post(
+                url,
+                headers=headers,
+                json={
+                    "model": model or "test",
+                    "messages": [{"role": "user", "content": "Hi"}],
+                    "max_tokens": 5,
+                },
+            )
+            latency_ms = int((time.time() - start) * 1000)
+
+            if resp.status_code == 200:
+                resp_data = resp.json()
+                choices = resp_data.get("choices", [])
+                content = ""
+                if choices:
+                    msg = choices[0].get("message", {})
+                    content = msg.get("content", "")[:100]
+                return {
+                    "success": True,
+                    "message": "连接成功",
+                    "latency_ms": latency_ms,
+                    "response": content,
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": f"HTTP {resp.status_code}: {resp.text[:200]}",
+                    "latency_ms": int((time.time() - start) * 1000),
+                }
+    except httpx.TimeoutException:
+        return {"success": False, "message": f"连接超时（{timeout}s）"}
+    except Exception as e:
+        return {"success": False, "message": f"连接失败: {str(e)}"}
+
+
 def get_runtime_config() -> dict:
     """供内部模块获取最新运行时配置"""
     return _get_merged_config()

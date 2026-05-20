@@ -109,6 +109,11 @@ export const securityGatewayApi = {
     return sgApi.put('/api/v1/admin/config', data)
   },
 
+  // 测试 LLM 连接
+  testLlmConnection(data: { url: string; model: string; api_key: string; timeout: number }) {
+    return sgApi.post('/api/v1/admin/config/test-llm', data)
+  },
+
   // 看板统计
   getDashboardStats(days?: number) {
     return sgApi.get('/api/v1/admin/dashboard/stats', { params: { days } })
