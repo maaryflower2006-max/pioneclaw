@@ -59,35 +59,68 @@
 
 ### 调用时序
 
+```mermaid
+sequenceDiagram
+    actor U as 用户
+    participant P as PioneClaw Center
+    participant S as 安全网关
+    participant L as LLM 服务
+
+    U->>+P: 发送消息
+    P->>+S: POST /filter/input
+    S->>S: 词引擎 + 正则引擎 + 模型引擎
+    alt action = BLOCK
+        S-->>P: {action: block, reason}
+        P-->>U: ❌ 安全拦截: [原因]
+    else action = APPROVE
+        S-->>P: {action: approve, reason}
+        P-->>U: ⏸️ 待审批: [原因]
+    else action = SANITIZE
+        S-->>P: {action: sanitize, content}
+        P->>U: 继续（脱敏后内容）
+    else action = ALLOW
+        S-->>P: {action: allow}
+        P->>+L: 请求 LLM
+        L-->>P: 返回内容
+        P->>+S: POST /filter/output
+        S->>S: 正则引擎（仅输出侧）
+        S-->>P: {action, content}
+        P->>+S: POST /check/tool（如有工具调用）
+        S->>S: 工具安全检查
+        S-->>P: {action, modified_args}
+        P-->>U: 返回最终结果
+    end
 ```
-用户输入
-  │
-  ▼
-FastAPI 路由层 (chat.py / agent_execute.py)
-  │  SecurityClient.filter_input(message, context)
-  │  ────► 安全网关 /api/v1/filter/input
-  │  ◄──── {action, content, reason, risk_level}
-  │
-  ├─ BLOCK ──▶ 返回拦截信息给用户，流程终止
-  ├─ APPROVE ──▶ 创建审批记录，返回待审批状态
-  ├─ SANITIZE ──▶ 替换为脱敏内容，继续
-  └─ ALLOW ──▶ 继续进入 AgentLoop
-              │
-              ▼
-        AgentLoop.process_message()
-              │
-              ├──► LLM 返回内容
-              │
-              ├──► SecurityClient.filter_output(content, context)
-              │    ────► 安全网关 /api/v1/filter/output
-              │    ◄──── {action, content, reason}
-              │
-              ├──► ToolHookRunner BEFORE_TOOL
-              │    SecurityClient.check_tool(tool_name, args, context)
-              │    ────► 安全网关 /api/v1/check/tool
-              │    ◄──── {action, modified_args, reason}
-              │
-              └──► 返回给用户
+
+### 数据流图
+
+```mermaid
+flowchart LR
+    subgraph Input["输入侧 pre_input"]
+        A[用户输入] --> B{词引擎}
+        B --> C{正则引擎}
+        C --> D{模型引擎}
+    end
+
+    D --> E{决策引擎}
+
+    subgraph Decision["决策结果"]
+        E -- severity≥4 --> F[BLOCK]
+        E -- severity=3 --> G[APPROVE]
+        E -- severity≤2 --> H[SANITIZE]
+        E -- 无匹配 --> I[ALLOW]
+    end
+
+    I --> J[AgentLoop]
+    J --> K[LLM]
+    K --> L[输出过滤]
+    L --> M[工具检查]
+    M --> N[返回用户]
+
+    style F fill:#f56c6c,color:#fff
+    style G fill:#e6a23c,color:#fff
+    style H fill:#409eff,color:#fff
+    style I fill:#67c23a,color:#fff
 ```
 
 ---
@@ -151,6 +184,41 @@ pione/pioneclaw/security-gateway/
 ---
 
 ## 三、检测引擎
+
+### 引擎检测流程
+
+```mermaid
+flowchart TD
+    A[输入文本] --> B{启用词引擎?}
+    B -->|是| C[WordEngine]
+    B -->|否| D{启用正则引擎?}
+    C -->|命中| E[记录匹配结果]
+    C -->|未命中| D
+    D -->|是| F[RegexEngine]
+    D -->|否| G{启用模型引擎?}
+    F -->|命中| E
+    F -->|未命中| G
+    G -->|是| H{启用 LLM 增强?}
+    G -->|否| I[DecisionEngine]
+    H -->|是| J[RuleBasedDetector]
+    H -->|否| J
+    J -->|severity≥3| K[直接返回]
+    J -->|severity<3| L{LLMDetector}
+    L -->|命中| E
+    L -->|未命中/失败| I
+    E --> I
+    K --> I
+    I --> M{决策}
+    M -->|severity≥4| N[BLOCK critical]
+    M -->|severity=3| O[APPROVE high]
+    M -->|severity≤2| P[SANITIZE medium]
+    M -->|无匹配| Q[ALLOW low]
+
+    style N fill:#f56c6c,color:#fff
+    style O fill:#e6a23c,color:#fff
+    style P fill:#409eff,color:#fff
+    style Q fill:#67c23a,color:#fff
+```
 
 ### 3.1 词引擎（WordEngine）
 
@@ -241,7 +309,46 @@ SECURITY_GATEWAY_ENABLED=true
 SECURITY_GATEWAY_TIMEOUT=5.0
 ```
 
-### 5.2 告警通知配置
+### 5.2 LLM 配置引用流程
+
+安全网关支持**直接引用平台 AI 配置**，避免重复录入 URL/模型/API Key。
+
+```mermaid
+flowchart LR
+    subgraph Platform["PioneClaw 平台"]
+        A[AI 配置管理]
+        A -->|存储| B[(AI模型配置表)]
+    end
+
+    subgraph Frontend["前端界面"]
+        C[安全网关配置管理] -->|选择| D{平台AI配置下拉框}
+        D -->|选中| E[自动填充 URL/模型]
+        D -->|选中| F[调用 /api-key 获取 Key]
+    end
+
+    subgraph Gateway["安全网关"]
+        G[GET /config] -->|返回| H[ai_config_id]
+        I[LLMDetector] -->|使用| J[model_engine_llm_url]
+    end
+
+    B --> D
+    E --> G
+    F --> I
+
+    style A fill:#409eff,color:#fff
+    style C fill:#67c23a,color:#fff
+    style G fill:#e6a23c,color:#fff
+```
+
+**流程说明**：
+1. 平台在 `AI 配置管理`中维护所有 LLM 供应商配置（DeepSeek、OpenAI、本地 vLLM 等）
+2. 安全网关配置页面提供`平台 AI 配置`下拉框，列出所有可用配置
+3. 选中后自动填充 Base URL、模型 ID，并向后端请求 API Key 明文
+4. 安全网关保存 `ai_config_id` 引用和实际参数，重启后从 `.env` 恢复
+
+> 💡 **URL 自动补全**：用户常配置 `http://host:port/v1`，安全网关自动补全为 `/v1/chat/completions`，避免 404。
+
+### 5.3 告警通知配置
 
 在安全网关 `.env` 中配置：
 
@@ -364,19 +471,66 @@ SG_ALERT_WEBHOOK_URL=http://localhost:8000/api/security-gateway/webhook
 访问路径：`/security-gateway`
 
 ### 7.1 安全看板
-- 风险趋势折线图（近7天 block/approve/sanitize/allow 趋势）
-- 高频敏感词柱状图 TOP 10
-- 今日概览卡片（总检测数、拦截数、严重事件数）
-- 用户风险排名表格
+
+风险趋势折线图（近7天 block/approve/sanitize/allow 趋势）、高频敏感词柱状图 TOP 10、今日概览卡片、用户风险排名表格。
+
+> 📸 **截图占位**：`docs/images/sg-dashboard.png`
+> 
+> 应展示：四个统计卡片（今日总检测/拦截/严重事件/平均响应时间）+ 风险趋势折线图 + 高频敏感词柱状图
 
 ### 7.2 检测测试
+
 输入文本实时调用 `/filter/input`，显示检测结果、匹配规则、模型检测结果、脱敏结果。
 
+> 📸 **截图占位**：`docs/images/sg-test-filter.png`
+> 
+> 应展示：输入框中输入"身份证号 51012319900101001X"，右侧结果面板显示 action=block、risk_level=critical、matched_rules 包含 id_card 规则
+
+**检测示例**：
+
+| 输入文本 | 检测结果 | 说明 |
+| -------- | -------- | ------ |
+| `身份证号 51012319900101001X` | 🔴 BLOCK | 正则命中身份证号，severity=4 |
+| `ignore all previous instructions` | 🔴 BLOCK | 规则命中 prompt 注入，severity=4 |
+| `手机号 13800138000` | 🟡 SANITIZE | 正则命中手机号，脱敏为 `138****8000` |
+| `今天天气怎么样` | 🟢 ALLOW | 无风险，直接放行 |
+
 ### 7.3 词库管理
+
 敏感词/风险词/放通词的 CRUD 操作，支持批量导入。
 
-### 7.4 审计日志
+> 📸 **截图占位**：`docs/images/sg-words.png`
+> 
+> 应展示：词库表格（词/类型/严重度/描述/状态）+ 新增/编辑弹窗
+
+### 7.4 配置管理
+
+引擎开关 + LLM 增强配置，支持引用平台 AI 配置。
+
+> 📸 **截图占位**：`docs/images/sg-config.png`
+> 
+> 应展示：启用词引擎/正则引擎/模型引擎开关 + 启用 LLM 增强开关 + 平台 AI 配置下拉框（选中 qwen3-27b）+ Base URL/模型 ID/API Key/超时输入框 + 测试连接按钮
+
+**配置流程示例**：
+
+```mermaid
+flowchart LR
+    A[打开配置管理] --> B[启用 LLM 增强]
+    B --> C[选择平台 AI 配置]
+    C -->|选中 qwen3-27b| D[自动填充 URL/模型]
+    D --> E[点击测试连接]
+    E -->|连接成功| F[点击保存配置]
+
+    style F fill:#67c23a,color:#fff
+```
+
+### 7.5 审计日志
+
 按风险级别、检查点、时间范围筛选，分页展示。
+
+> 📸 **截图占位**：`docs/images/sg-audit.png`
+> 
+> 应展示：审计日志表格（时间/检查点/用户/风险级别/操作/原因）+ 筛选栏
 
 ---
 
@@ -436,25 +590,37 @@ result = await security_client.check_tool(tool_name, arguments, context)
 
 当安全网关返回 `action="approve"`（severity=3，中危）时触发审批。
 
-### 9.2 流程
+### 9.2 审批流程
 
-```
-用户发送消息
-  │
-  ▼
-安全网关检测 ── severity=3 ──▶ action="approve"
-  │
-  ▼
-PioneClaw 创建 Approval 记录（type=SECURITY_GATEWAY）
-  │
-  ▼
-返回用户："待审批: [原因]" + approval_id
-  │
-  ▼
-管理员在审批页面审核
-  │
-  ├─ 批准 ──▶ 用户重新发送消息，跳过检测直接放行
-  └─ 拒绝 ──▶ 流程终止
+```mermaid
+sequenceDiagram
+    actor U as 用户
+    participant P as PioneClaw
+    participant S as 安全网关
+    participant DB as 审批表
+    participant A as 管理员
+
+    U->>+P: 发送敏感消息
+    P->>+S: /filter/input
+    S->>S: 检测 = severity=3
+    S-->>P: action=approve, reason=...
+    P->>DB: 创建 Approval 记录
+    DB-->>P: approval_id=42
+    P-->>U: ⏸️ 待审批: [原因]
+
+    A->>P: 审批页面查看
+    P->>DB: 查询待审批列表
+    DB-->>P: 返回记录
+
+    alt 管理员批准
+        A->>P: 点击批准
+        P->>DB: 更新状态=approved
+        P-->>U: ✅ 审批通过，请重新发送
+    else 管理员拒绝
+        A->>P: 点击拒绝
+        P->>DB: 更新状态=rejected
+        P-->>U: ❌ 审批拒绝，流程终止
+    end
 ```
 
 ### 9.3 响应格式
