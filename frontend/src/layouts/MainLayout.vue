@@ -103,7 +103,7 @@ import {
   Odometer, Cpu, Connection, Tools, Memo,
   MagicStick, Setting, ArrowDown, User, Histogram,
   ChatDotRound, Folder, List, Timer, Collection, Notebook,
-  Sunny, Moon, SwitchButton, TrendCharts
+  Sunny, Moon, SwitchButton, TrendCharts, Lock
 } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 
@@ -122,7 +122,7 @@ const activeMenu = computed(() => route.path)
 const iconMap: Record<string, Component> = {
   Odometer, Cpu, ChatDotRound, Tools, List, Timer,
   Memo, Collection, Histogram, Notebook, Folder,
-  User, MagicStick, Connection, Setting, TrendCharts
+  User, MagicStick, Connection, Setting, TrendCharts, Lock
 }
 
 // Nav i18n key mapping: route path -> nav key
