@@ -1676,8 +1676,7 @@ onUnmounted(() => {
         background: var(--pc-bg-elevated);
         padding: 12px 16px;
         border-radius: 12px;
-        max-width: 100%;
-        width: fit-content;
+        max-width: 85%;
         position: relative;
         box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
         border: 1px solid var(--pc-border);
@@ -1818,8 +1817,7 @@ onUnmounted(() => {
         background: var(--pc-primary);
         padding: 12px 16px;
         border-radius: 12px;
-        max-width: 100%;
-        width: fit-content;
+        max-width: 85%;
 
         .message-content {
           font-size: 14px;
