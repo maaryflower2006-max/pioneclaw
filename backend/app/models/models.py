@@ -459,6 +459,7 @@ class SessionMessage(Base):
     session_id: Mapped[str] = mapped_column(ForeignKey("chat_sessions.id"), index=True)
     role: Mapped[str] = mapped_column(String(20))  # user / assistant / system / tool
     content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    reasoning_content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     tool_calls: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     token_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))

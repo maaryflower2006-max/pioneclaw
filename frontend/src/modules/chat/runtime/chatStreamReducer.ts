@@ -85,7 +85,7 @@ export function chatStreamReducer(
     case 'tool_error':
       return reduceToolError(state, action.payload)
     case 'iteration_boundary':
-      return reduceIterationBoundary(state, action.now)
+      return reduceIterationMerge(state, action.now)
     case 'message_complete':
       return reduceMessageComplete(state, action.payload)
     case 'stop_streaming':
@@ -360,40 +360,27 @@ function reduceToolError(
   }
 }
 
-/* ─── iteration boundary ─── */
-function reduceIterationBoundary(
+/* ─── iteration merge (multi-turn content coalesced into same message) ─── */
+function reduceIterationMerge(
   state: ChatStreamRuntimeState,
-  now: number
+  _now: number
 ): ChatStreamRuntimeState {
   const currentIndex = findMessageIndex(state.messages, state.currentStreamingMessageId)
   if (currentIndex === -1) return state
 
-  // 把当前消息标记为非流式（finalize），避免已展示内容被清空
+  // 多轮迭代内容归并在同一个消息中，不创建新消息/新头像
   const currentMessage = state.messages[currentIndex]
-  const finalizedMessage: ChatMessage = {
+  const updatedMessage: ChatMessage = {
     ...currentMessage,
-    isStreaming: false,
+    isStreaming: true,
     isThinking: false,
   }
 
-  // 创建新的 assistant 消息作为新一轮流式目标
-  const newMessage: ChatMessage = {
-    id: `msg-${now}-${Math.random().toString(36).slice(2, 7)}`,
-    role: 'assistant',
-    content: '',
-    timestamp: new Date(),
-    toolCalls: [],
-    isStreaming: true,
-  }
-
-  const nextMessages = [...state.messages]
-  nextMessages[currentIndex] = finalizedMessage
-  nextMessages.push(newMessage)
-
   return {
     ...state,
-    messages: nextMessages,
-    currentStreamingMessageId: newMessage.id,
+    messages: replaceMessage(state.messages, currentIndex, updatedMessage),
+    isStreaming: true,
+    currentStreamingMessageId: updatedMessage.id,
   }
 }
 

@@ -121,7 +121,7 @@
             :key="msg.id || index"
           >
             <div
-              v-if="!(msg.isStreaming && !msg.content && !msg.thinkingContent && !(msg.toolCalls && msg.toolCalls.length > 0))"
+              v-if="msg.content || msg.thinkingContent || (msg.toolCalls && msg.toolCalls.length > 0) || msg.isStreaming"
               class="message-row"
               :class="msg.role"
             >
@@ -175,8 +175,8 @@
                       </div>
                     </div>
                   </div>
-                  <!-- 普通回复 - 流式时内容为空则不显示气泡 -->
-                  <div v-if="!msg.isStreaming || msg.content" class="message-bubble assistant">
+                  <!-- 普通回复 - 有内容才显示气泡，流式中无内容则显示 loading -->
+                  <div v-if="msg.content" class="message-bubble assistant">
                     <div class="message-content" v-html="formatMessage(msg.content)"></div>
                     <!-- 消息元数据 -->
                     <div class="message-meta" v-if="msg.latency || msg.input_tokens || msg.output_tokens">
@@ -369,12 +369,23 @@ const {
   restoreSessionMessages,
 } = useMessageStreaming()
 
-// 包装 dispatch：拦截 done 事件保存 context_usage
+let lastScrollTime = 0
+const SCROLL_THROTTLE_MS = 200
+
+// 包装 dispatch：拦截 done 事件保存 context_usage，流式中自动滚动
 const wrappedDispatch = (data: StreamRealtimeMessage) => {
   if (data.type === 'done' && data.context_usage) {
     contextUsage.value = data.context_usage
   }
   dispatchStreamEvent(data)
+  // 流式输出过程中自动滚动到底部（节流 200ms，避免高频 DOM 查询）
+  if (isStreamActive.value && loadingConversationId.value === currentConversation.value?.id) {
+    const now = Date.now()
+    if (now - lastScrollTime > SCROLL_THROTTLE_MS) {
+      lastScrollTime = now
+      scrollToBottom()
+    }
+  }
 }
 
 // 映射旧字段 → 模板期望的字段（兼容现有模板）
@@ -511,8 +522,10 @@ function handleWebSocketMessage(data: any) {
       break
 
     // 流式响应块 - 需要检查 session_id 是否匹配当前会话
+    // 当 SSE 流正在进行时，忽略 WebSocket 的 stream_chunk/stream_end 避免重复/冲突
     case 'stream_chunk':
       {
+        if (sseActive.value) break
         const currentSessId = currentConversation.value?.sessionId
         if (currentSessId && data.session_id === currentSessId) {
           dispatchStreamEvent({ type: 'content', content: data.chunk })
@@ -521,6 +534,7 @@ function handleWebSocketMessage(data: any) {
       break
 
     case 'stream_end':
+      if (sseActive.value) break
       dispatchStreamEvent({ type: 'message_complete' })
       break
   }
@@ -594,6 +608,7 @@ const inputMessage = ref('')
 const loadingConversationId = ref<string | null>(null)  // 正在加载的会话 ID
 const availableModels = ref<ModelConfig[]>([])
 const selectedModelId = ref<number | null>(null)
+const sseActive = ref(false) // SSE 流是否正在进行（用于屏蔽 WebSocket 的冗余 stream_chunk/stream_end）
 
 const tierLabels: Record<string, string> = { opus: 'Opus - 最强', sonnet: 'Sonnet - 均衡', haiku: 'Haiku - 快速', custom: '自定义' }
 const tieredModels = computed(() => {
@@ -667,17 +682,43 @@ const contextUsageStatus = computed(() => {
 })
 
 // 切换工具调用展开/收缩
-// 持久化消息到后端
-async function persistMessage(conv: Conversation, role: string, content: string, toolCalls?: any[]) {
+
+/**
+ * POST 带 query 参数回退兼容（@deprecated 下版本移除）
+ *
+ * 旧后端只接受 query 参数时会返回 422/400，此时回退到 query 模式。
+ * 后端已统一为 JSON body，该回退将在后续版本移除。
+ */
+async function postWithFallback(url: string, body: any): Promise<void> {
   try {
-    const params: any = { role, content }
-    if (toolCalls && toolCalls.length > 0) {
-      params.tool_calls = JSON.stringify(toolCalls)
+    await api.post(url, body)
+    return
+  } catch (bodyErr: any) {
+    const is422 = bodyErr.response?.status === 422
+    const is400 = bodyErr.response?.status === 400
+    if (!is422 && !is400) {
+      console.warn('[postWithFallback] body failed:', bodyErr.message)
+      return
     }
-    await api.post(`/chat/sessions/${conv.id}/messages`, null, { params })
-  } catch (e) {
-    // 后端不可用时静默降级
   }
+  // 回退到 query 参数（兼容旧后端）
+  try {
+    await api.post(url, null, { params: body })
+  } catch (queryErr: any) {
+    console.warn('[postWithFallback] query fallback also failed:', queryErr.message)
+  }
+}
+
+// 持久化消息到后端
+async function persistMessage(conv: Conversation, role: string, content: string, toolCalls?: any[], reasoningContent?: string) {
+  const params: any = { role, content }
+  if (toolCalls && toolCalls.length > 0) {
+    params.tool_calls = JSON.stringify(toolCalls)
+  }
+  if (reasoningContent) {
+    params.reasoning_content = reasoningContent
+  }
+  await postWithFallback(`/chat/sessions/${conv.id}/messages`, params)
 }
 
 // 工具分类 & 图标映射
@@ -918,7 +959,9 @@ async function selectConversation(conv: Conversation) {
           name: tc.name,
           arguments: tc.arguments,
           result: tc.result,
-          status: tc.loading ? 'running' : tc.result ? 'success' : 'pending',
+          error: tc.error,
+          status: tc.status || (tc.result ? 'success' : tc.error ? 'error' : 'pending'),
+          duration: tc.duration,
         })),
         timestamp: new Date(m.created_at),
       }))
@@ -948,7 +991,7 @@ async function selectConversation(conv: Conversation) {
   }
 
   replaceMessages(loadedMessages)
-  scrollToBottom()
+  scrollToBottom(100)
 }
 
 // 删除当前对话
@@ -1177,6 +1220,7 @@ async function sendMessage() {
   if (!targetConversation) return
 
   try {
+    sseActive.value = true
     const sessionId = targetConversation.sessionId || crypto.randomUUID()
     if (!targetConversation.sessionId) {
       targetConversation.sessionId = sessionId
@@ -1208,7 +1252,7 @@ async function sendMessage() {
     targetConversation.messages = [...streamMessages.value]
     const lastMsg = streamMessages.value[streamMessages.value.length - 1]
     if (lastMsg && lastMsg.role === 'assistant') {
-      persistMessage(targetConversation, 'assistant', lastMsg.content || '', lastMsg.toolCalls)
+      persistMessage(targetConversation, 'assistant', lastMsg.content || '', lastMsg.toolCalls, lastMsg.reasoningContent)
     }
   } catch (error: any) {
     console.error('sendMessage error:', error)
@@ -1233,6 +1277,7 @@ async function sendMessage() {
     })
     ElMessage.error(errorMsg)
   } finally {
+    sseActive.value = false
     loadingConversationId.value = null
     targetConversation.updatedAt = new Date()
     saveConversations()
@@ -1304,13 +1349,20 @@ function handleKeydown(event: KeyboardEvent) {
   }
 }
 
-// 滚动到底部
-function scrollToBottom() {
-  nextTick(() => {
-    if (messagesContainer.value) {
-      messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
-    }
-  })
+// 滚动到底部（delay 用于等待 DOM/图片/动画渲染完成）
+function scrollToBottom(delay = 0) {
+  const doScroll = () => {
+    nextTick(() => {
+      if (messagesContainer.value) {
+        messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+      }
+    })
+  }
+  if (delay > 0) {
+    setTimeout(doScroll, delay)
+  } else {
+    doScroll()
+  }
 }
 
 // 格式化时间
@@ -1451,7 +1503,9 @@ onMounted(async () => {
             name: tc.name,
             arguments: tc.arguments,
             result: tc.result,
-            status: tc.loading ? 'running' : tc.result ? 'success' : 'pending',
+            error: tc.error,
+            status: tc.status || (tc.result ? 'success' : tc.error ? 'error' : 'pending'),
+            duration: tc.duration,
           })),
           timestamp: new Date(m.created_at),
         }))
@@ -1481,6 +1535,7 @@ onMounted(async () => {
     }
 
     replaceMessages(loadedMessages)
+    scrollToBottom(100)
   }
   // 连接 WebSocket
   connectWebSocket()
@@ -1867,13 +1922,14 @@ onUnmounted(() => {
 
         .bubble-actions {
           position: absolute;
-          right: -40px;
+          left: calc(100% + 8px);
           top: 50%;
           transform: translateY(-50%);
           opacity: 0;
           transition: opacity 0.2s;
           display: flex;
           gap: 4px;
+          white-space: nowrap;
         }
 
         &:hover .bubble-actions {

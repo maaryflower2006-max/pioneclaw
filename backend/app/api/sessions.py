@@ -3,7 +3,8 @@
 """
 import uuid
 from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Body
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from app.core import get_db
@@ -71,6 +72,7 @@ async def get_session(
                 "id": m.id,
                 "role": m.role,
                 "content": m.content,
+                "reasoning_content": m.reasoning_content,
                 "tool_calls": m.tool_calls,
                 "created_at": m.created_at.isoformat(),
             }
@@ -121,12 +123,17 @@ async def delete_session(
     return {"message": "会话已删除"}
 
 
+class SaveMessageBody(BaseModel):
+    role: str
+    content: Optional[str] = ""
+    reasoning_content: Optional[str] = None
+    tool_calls: Optional[str] = None
+
+
 @router.post("/{session_id}/messages")
 async def save_message(
     session_id: str,
-    role: str = Query(...),
-    content: str = Query(default=""),
-    tool_calls: Optional[str] = Query(default=None),
+    body: SaveMessageBody,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
@@ -140,18 +147,38 @@ async def save_message(
 
     import json as _json
 
+    def _safe_loads_tool_calls(raw: str, max_depth: int = 5) -> list:
+        """安全解析 tool_calls JSON，限制嵌套深度防止恶意 payload。"""
+        data = _json.loads(raw)
+        if not isinstance(data, list):
+            raise ValueError("tool_calls must be a list")
+
+        def _check_depth(obj, depth: int) -> None:
+            if depth > max_depth:
+                raise ValueError(f"tool_calls nested depth exceeds {max_depth}")
+            if isinstance(obj, dict):
+                for v in obj.values():
+                    _check_depth(v, depth + 1)
+            elif isinstance(obj, list):
+                for item in obj:
+                    _check_depth(item, depth + 1)
+
+        _check_depth(data, 1)
+        return data
+
     msg = SessionMessage(
         session_id=session_id,
-        role=role,
-        content=content or "",
-        tool_calls=_json.loads(tool_calls) if tool_calls else None,
+        role=body.role,
+        content=body.content or "",
+        reasoning_content=body.reasoning_content or None,
+        tool_calls=_safe_loads_tool_calls(body.tool_calls) if body.tool_calls else None,
     )
     db.add(msg)
     session.message_count = (session.message_count or 0) + 1
 
     # Auto-title from first user message
-    if role == "user" and session.title == "新对话":
-        session.title = content[:50] + ("..." if len(content) > 50 else "")
+    if body.role == "user" and session.title == "新对话":
+        session.title = body.content[:50] + ("..." if len(body.content) > 50 else "")
 
     await db.commit()
     return {"id": msg.id, "role": msg.role, "created_at": msg.created_at.isoformat()}
