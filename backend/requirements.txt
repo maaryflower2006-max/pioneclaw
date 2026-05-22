@@ -8,7 +8,7 @@ uvicorn[standard]==0.29.0
 python-multipart==0.0.18
 
 # ── Database ───────────────────────────────────────────────────
-sqlalchemy==2.0.41
+sqlalchemy==2.0.49
 aiosqlite==0.22.1             # SQLite async driver
 asyncpg==0.31.0               # PostgreSQL async driver
 alembic==1.18.4               # Database migrations
