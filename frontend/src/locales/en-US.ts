@@ -195,6 +195,7 @@ export default {
     clearChat: 'Clear Chat',
     exportChat: 'Export Chat',
     deleteChat: 'Delete Chat',
+    deleteBackendFailed: 'Deleted locally, but backend sync failed',
     startNewChat: 'Start a New Chat',
     startNewChatTip: 'Select a model and type your question to begin',
     quick: 'Quick',

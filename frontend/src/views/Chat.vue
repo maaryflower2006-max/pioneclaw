@@ -35,6 +35,17 @@
             </div>
             <div class="conv-preview">{{ getLastMessage(conv) }}</div>
           </div>
+          <div class="conv-actions" v-show="!sidebarCollapsed" @click.stop>
+            <el-button
+              size="small"
+              circle
+              class="action-btn delete-btn"
+              :title="$t('chat.deleteChat')"
+              @click="confirmDeleteConversationById(conv.id)"
+            >
+              <el-icon><Delete /></el-icon>
+            </el-button>
+          </div>
         </div>
 
         <el-empty v-if="filteredConversations.length === 0 && !sidebarCollapsed" :description="$t('chat.noConversations')" size="small" />
@@ -70,13 +81,9 @@
                     <el-icon class="dropdown-icon"><DeleteFilled /></el-icon>
                     {{ $t('chat.clearChat') }}
                   </el-dropdown-item>
-                  <el-dropdown-item @click="exportConversation">
+                  <el-dropdown-item divided @click="exportConversation">
                     <el-icon class="dropdown-icon"><Download /></el-icon>
                     {{ $t('chat.exportChat') }}
-                  </el-dropdown-item>
-                  <el-dropdown-item divided @click="confirmDeleteConversation">
-                    <el-icon class="dropdown-icon"><Delete /></el-icon>
-                    <span class="dropdown-danger-item">{{ $t('chat.deleteChat') }}</span>
                   </el-dropdown-item>
                 </el-dropdown-menu>
               </template>
@@ -1086,9 +1093,8 @@ async function selectConversation(conv: Conversation) {
   scrollToBottom(100)
 }
 
-// 确认删除当前对话
-async function confirmDeleteConversation() {
-  if (!currentConversation.value) return
+// 确认删除指定对话
+async function confirmDeleteConversationById(convId: string) {
   try {
     await ElMessageBox.confirm(
       $t('chat.confirmDelete'),
@@ -1100,33 +1106,44 @@ async function confirmDeleteConversation() {
         confirmButtonClass: 'el-button--danger'
       }
     )
-    await deleteCurrentConversation()
+    await deleteConversationById(convId)
   } catch {
     // 用户取消，不处理
   }
 }
 
-// 删除当前对话
-async function deleteCurrentConversation() {
-  if (!currentConversation.value) return
-  contextUsage.value = null
-  const convId = currentConversation.value.id
+// 删除指定对话
+async function deleteConversationById(convId: string) {
+  const isCurrent = currentConversation.value?.id === convId
+  if (isCurrent) contextUsage.value = null
+
   const index = conversations.value.findIndex(c => c.id === convId)
   if (index > -1) {
     conversations.value.splice(index, 1)
-    syncCurrentMessagesToConv()
-    const nextConv = conversations.value[0] || null
-    currentConversation.value = nextConv
-    if (nextConv) {
-      replaceMessages(nextConv.messages.length > 0 ? [...nextConv.messages] : [])
-    } else {
-      clearMessages()
+    if (isCurrent) {
+      syncCurrentMessagesToConv()
+      const nextConv = conversations.value[0] || null
+      currentConversation.value = nextConv
+      if (nextConv) {
+        replaceMessages(nextConv.messages.length > 0 ? [...nextConv.messages] : [])
+      } else {
+        clearMessages()
+      }
     }
     saveConversations()
   }
+
   try {
     await api.delete(`/chat/sessions/${convId}`)
-  } catch (e) { /* 后端不可用时不报错 */ }
+  } catch (e) {
+    ElMessage.warning($t('chat.deleteBackendFailed'))
+  }
+}
+
+// 删除当前对话（复用 deleteConversationById）
+async function deleteCurrentConversation() {
+  if (!currentConversation.value) return
+  await deleteConversationById(currentConversation.value.id)
 }
 
 // 清空当前对话
@@ -1831,6 +1848,33 @@ onUnmounted(() => {
           text-overflow: ellipsis;
           white-space: nowrap;
         }
+      }
+
+      .conv-actions {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        opacity: 0;
+        transition: opacity 0.2s ease;
+
+        .action-btn {
+          width: 28px;
+          height: 28px;
+          padding: 0;
+          border: none;
+          background: transparent;
+          color: var(--pc-text-muted);
+          transition: all 0.2s ease;
+
+          &:hover {
+            background: rgba(var(--pc-accent-red-rgb), 0.1);
+            color: var(--pc-accent-red);
+          }
+        }
+      }
+
+      &:hover .conv-actions {
+        opacity: 1;
       }
     }
   }

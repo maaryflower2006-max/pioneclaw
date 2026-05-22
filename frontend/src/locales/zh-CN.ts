@@ -195,6 +195,7 @@ export default {
     clearChat: '清空对话',
     exportChat: '导出对话',
     deleteChat: '删除对话',
+    deleteBackendFailed: '本地已删除，但后端同步失败',
     startNewChat: '开始新对话',
     startNewChatTip: '选择模型并输入问题开始对话',
     quick: '快速',

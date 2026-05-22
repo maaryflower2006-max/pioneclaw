@@ -8,6 +8,12 @@ permissions:
   contents: read
   pull-requests: write
 
+env:
+  # 用于识别已有评论的 bot 用户名。
+  # 默认使用 GITHUB_TOKEN 时为 "github-actions[bot]"；
+  # 若改用 PAT，需同步修改此变量。
+  REVIEW_BOT_LOGIN: github-actions[bot]
+
 jobs:
   review:
     runs-on: ubuntu-latest
@@ -18,25 +24,48 @@ jobs:
         with:
           fetch-depth: 2
 
-      - name: Get PR diff
+      - name: Get PR diff (filtered)
         run: |
-          gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" > pr.diff
+          # 审查代码文件 + 配置文件（workflow、docker、脚本等）
+          # 跳过 lockfile、生成文件、图片、snapshot
+          gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            -- '*.py' '*.ts' '*.tsx' '*.js' '*.jsx' '*.go' '*.java' '*.rs' '*.vue' '*.sql' \
+            -- '*.yml' '*.yaml' '*.json' '*.sh' '*.toml' '*.dockerfile' \
+            > pr.diff
 
-          # 按行截断，保留前 2000 行 diff，防止 token 超限
-          # 若被截断，在末尾附加提示标记
+          # 输出被排除的文件列表供审计
+          echo "--- Excluded files (not reviewed) ---"
+          gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            -- '*.lock' '*.lockb' 'package-lock.json' 'yarn.lock' 'pnpm-lock.yaml' 'poetry.lock' 'Cargo.lock' \
+            -- '*.min.js' '*.min.css' '*.map' \
+            -- '*.svg' '*.png' '*.jpg' '*.jpeg' '*.gif' '*.webp' '*.ico' \
+            -- '*.snap' '__snapshots__/*' \
+            -- '*.generated.*' '*.gen.*' \
+            | grep -E '^diff --git' | sed 's/diff --git a\//  - /' | sed 's/ b\/.*/' || true
+          echo "-------------------------------------"
+
+          # 如果过滤后 diff 为空，输出提示并跳过后续步骤
+          if [ ! -s pr.diff ]; then
+            echo "No relevant code files changed. Skipping review."
+            echo "SKIP_REVIEW=true" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          # 按行截断，保留前 2000 行，防止 token 超限
           total_lines=$(wc -l < pr.diff)
           if [ "$total_lines" -gt 2000 ]; then
-              head -n 2000 pr.diff > pr_trimmed.diff
-              echo "" >> pr_trimmed.diff
-              echo "[... diff truncated after 2000 lines, total $total_lines lines]" >> pr_trimmed.diff
+            head -n 2000 pr.diff > pr_trimmed.diff
+            echo "" >> pr_trimmed.diff
+            echo "[... diff truncated after 2000 lines, total $total_lines lines]" >> pr_trimmed.diff
           else
-              cp pr.diff pr_trimmed.diff
+            cp pr.diff pr_trimmed.diff
           fi
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
 
       - name: Ask DeepSeek to review
+        if: env.SKIP_REVIEW != 'true'
         run: |
           python3 <<'PY'
           import os
@@ -48,22 +77,25 @@ jobs:
               diff = f.read()
 
           prompt = (
-              "你是一个严格但务实的资深代码审查员。请审查下面的 GitHub PR diff。\n\n"
-              "重点关注：\n"
-              "1. 明显 bug\n"
-              "2. 安全风险\n"
-              "3. 并发、边界条件、空值问题\n"
-              "4. 性能问题\n"
-              "5. 可维护性和可读性\n"
-              "6. 测试缺失\n\n"
+              "你是一个严格但务实的资深代码审查员，隶属于 PioneClaw 安全研发团队。"
+              "请审查下面的 GitHub PR diff。\n\n"
+              "重点关注（按优先级排序）：\n"
+              "1. 安全风险：SQL 注入、XSS、命令注入、权限绕过、敏感信息泄露、CSRF\n"
+              "2. API Breaking Change：接口签名变更、返回值格式变化、废弃字段未兼容\n"
+              "3. 明显 bug：空指针、数组越界、异步竞态、资源泄漏\n"
+              "4. 并发与边界：线程安全、边界条件、空值处理、异常分支\n"
+              "5. 性能问题：N+1 查询、大对象拷贝、阻塞操作、内存泄漏\n"
+              "6. 测试覆盖：新增逻辑是否缺少单元测试、边界场景未覆盖\n"
+              "7. 可维护性：魔法数字、重复代码、命名不清晰、过度设计\n\n"
               "输出要求：\n"
               '- 用中文\n'
-              '- 不要泛泛而谈\n'
+              '- 不要泛泛而谈，每条建议必须指向具体代码位置\n'
+              '- 代码位置必须使用 `path/to/file.ext:行号` 或 `path/to/file.ext:起始行-结束行` 格式，例如 `backend/app/api/auth.py:45-52`\n'
+              '  （GitHub 会自动渲染为可点击链接）\n'
               '- 只指出与本次 diff 直接相关的问题\n'
-              '- 按严重程度排序\n'
+              '- 按严重程度排序（P0 阻塞 / P1 严重 / P2 重要 / P3 建议）\n'
               '- 如果没有重大问题，请明确说"未发现明显阻塞问题"\n'
-              '- 使用 Markdown\n'
-              '- 每条建议包含：问题、影响、建议修改方式\n\n'
+              '- 使用 Markdown，每条建议包含：问题、影响、建议修改方式\n\n'
               "PR diff:\n\n"
               f"```diff\n{diff}\n```\n"
           )
@@ -73,7 +105,7 @@ jobs:
               "messages": [
                   {
                       "role": "system",
-                      "content": "你是一个专业的 GitHub Pull Request 代码审查助手。"
+                      "content": "你是一个专业的 GitHub Pull Request 代码审查助手，专注于安全、性能和可维护性。"
                   },
                   {
                       "role": "user",
@@ -119,11 +151,39 @@ jobs:
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
 
-      - name: Comment review on PR
+      - name: Post or update review comment
         run: |
-          gh pr comment "$PR_NUMBER" \
-            --repo "$GITHUB_REPOSITORY" \
-            --body-file review.md
+          bot_login="${REVIEW_BOT_LOGIN}"
+
+          # 查找已有的 DeepSeek 审查评论
+          existing_comment_id=$(
+            gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+              --jq ".[] | select(.user.login == \"$bot_login\" and (.body | startswith(\"## DeepSeek PR 自动审查\"))) | .id" \
+              | head -n 1
+          )
+
+          if [ "$SKIP_REVIEW" = "true" ]; then
+            skip_body="## DeepSeek PR 自动审查\n\n"
+            skip_body+="本次变更无代码文件需要审查（仅 lockfile、生成文件、图片等被修改）。\n\n"
+            skip_body+="---\n"
+            skip_body+="_由 GitHub Actions + DeepSeek 自动生成。_"
+            echo "$skip_body" > review.md
+          fi
+
+          if [ -n "$existing_comment_id" ]; then
+            # 更新已有评论
+            gh api "repos/$GITHUB_REPOSITORY/issues/comments/$existing_comment_id" \
+              --method PATCH \
+              --raw-field body="$(cat review.md)"
+            echo "Updated existing review comment #$existing_comment_id"
+          else
+            # 创建新评论
+            gh pr comment "$PR_NUMBER" \
+              --repo "$GITHUB_REPOSITORY" \
+              --body-file review.md
+            echo "Created new review comment"
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          SKIP_REVIEW: ${{ env.SKIP_REVIEW }}
