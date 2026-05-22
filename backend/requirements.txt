@@ -53,7 +53,7 @@ typer==0.25.1
 rich==13.7.1
 
 # ── AI Integration (Optional) ──────────────────────────────────
-litellm==1.74.4               # Multi-provider LLM support
+litellm==1.85.1               # Multi-provider LLM support
 
 # ── MCP Protocol Support ───────────────────────────────────────
 mcp==1.10.0                   # Model Context Protocol SDK
