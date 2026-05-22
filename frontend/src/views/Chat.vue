@@ -60,15 +60,24 @@
             </el-option-group>
           </el-select>
           <template v-if="currentConversation">
-            <el-dropdown trigger="click">
+            <el-dropdown trigger="click" popper-class="chat-more-dropdown">
               <el-button size="small" circle>
                 <el-icon><MoreFilled /></el-icon>
               </el-button>
               <template #dropdown>
                 <el-dropdown-menu>
-                  <el-dropdown-item @click="clearCurrentConversation">{{ $t('chat.clearChat') }}</el-dropdown-item>
-                  <el-dropdown-item @click="exportConversation">{{ $t('chat.exportChat') }}</el-dropdown-item>
-                  <el-dropdown-item divided @click="deleteCurrentConversation">{{ $t('chat.deleteChat') }}</el-dropdown-item>
+                  <el-dropdown-item @click="clearCurrentConversation">
+                    <el-icon class="dropdown-icon"><DeleteFilled /></el-icon>
+                    {{ $t('chat.clearChat') }}
+                  </el-dropdown-item>
+                  <el-dropdown-item @click="exportConversation">
+                    <el-icon class="dropdown-icon"><Download /></el-icon>
+                    {{ $t('chat.exportChat') }}
+                  </el-dropdown-item>
+                  <el-dropdown-item divided @click="confirmDeleteConversation">
+                    <el-icon class="dropdown-icon"><Delete /></el-icon>
+                    <span class="dropdown-danger-item">{{ $t('chat.deleteChat') }}</span>
+                  </el-dropdown-item>
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
@@ -353,8 +362,8 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, onUnmounted } from 'vue'
-import { ElMessage } from 'element-plus'
-import { Plus, ChatLineRound, User, MoreFilled, CopyDocument, Refresh, ArrowRight, Fold, Expand, Paperclip, VideoPause, Promotion, QuestionFilled, Cpu, Tools, FolderOpened, Search, Setting, Document, Link } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Plus, ChatLineRound, User, MoreFilled, CopyDocument, Refresh, ArrowRight, Fold, Expand, Paperclip, VideoPause, Promotion, QuestionFilled, Cpu, Tools, FolderOpened, Search, Setting, Document, Link, Delete, DeleteFilled, Download } from '@element-plus/icons-vue'
 import { api, longApi } from '../api'
 import { useI18n } from 'vue-i18n'
 import { getAccessToken } from '@/stores/user'
@@ -1077,6 +1086,26 @@ async function selectConversation(conv: Conversation) {
   scrollToBottom(100)
 }
 
+// 确认删除当前对话
+async function confirmDeleteConversation() {
+  if (!currentConversation.value) return
+  try {
+    await ElMessageBox.confirm(
+      $t('chat.confirmDelete'),
+      $t('chat.deleteChat'),
+      {
+        confirmButtonText: $t('common.confirm'),
+        cancelButtonText: $t('common.cancel'),
+        type: 'warning',
+        confirmButtonClass: 'el-button--danger'
+      }
+    )
+    await deleteCurrentConversation()
+  } catch {
+    // 用户取消，不处理
+  }
+}
+
 // 删除当前对话
 async function deleteCurrentConversation() {
   if (!currentConversation.value) return
@@ -1651,6 +1680,48 @@ onUnmounted(() => {
   background: var(--pc-bg-deep);
   margin: -24px;
   position: relative;
+}
+
+// 右上角更多操作下拉菜单
+:global(.chat-more-dropdown .el-dropdown-menu) {
+  padding: 6px;
+  min-width: 160px;
+  background: var(--pc-bg-elevated);
+  border: 1px solid var(--pc-glass-border);
+  border-radius: var(--pc-radius-md);
+  box-shadow: var(--pc-shadow-lg);
+
+  .el-dropdown-menu__item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: var(--pc-radius-sm);
+    font-size: 13px;
+    color: var(--pc-text-primary);
+    line-height: 1.5;
+
+    &:hover {
+      background: rgba(var(--pc-primary-rgb), 0.08);
+      color: var(--pc-primary);
+    }
+
+    .dropdown-icon {
+      font-size: 15px;
+      flex-shrink: 0;
+    }
+
+    .dropdown-danger-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--pc-accent-red);
+
+      .dropdown-icon {
+        color: var(--pc-accent-red);
+      }
+    }
+  }
 }
 
 // 左侧会话列表
