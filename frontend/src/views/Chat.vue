@@ -1145,7 +1145,7 @@ async function compactContext(instruction?: string): Promise<boolean> {
       content: m.content,
     }))
 
-    const res = await api.post('/chat/compact', {
+    const res = await longApi.post('/chat/compact', {
       messages,
       instruction: instruction || undefined,
       model_config_id: selectedModelId.value,
