@@ -555,10 +555,8 @@ const configSchema = ref<Schema | null>(null)
 const configForm = ref<Record<string, any>>({})
 const configStatus = ref<any>(null)
 const objectExpanded = ref<Record<string, boolean>>({})
-const configFormRef = ref()
 
 // Schema form
-const schemaFormRef = ref()
 const schemaForm = reactive({
   skill_name: '',
   version: '1.0.0',

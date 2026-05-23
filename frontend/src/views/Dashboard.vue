@@ -65,7 +65,8 @@
               <span class="usage-label">{{ $t('dashboard.failedCount') }}</span>
             </div>
             <div class="usage-item">
-              <el-progress type="circle" :percentage="successRate" :width="56" :stroke-width="5" :color="successRate >= 95 ? 'var(--pc-accent-green)' : 'var(--pc-accent-orange)'" :show-text="true">
+              <span v-if="usageStats.total_calls === 0" class="usage-value">-</span>
+              <el-progress v-else type="circle" :percentage="successRate" :width="56" :stroke-width="5" :color="successRate >= 95 ? 'var(--pc-accent-green)' : 'var(--pc-accent-orange)'" :show-text="true">
                 <template #default="{ percentage }">
                   <span class="success-rate-text">{{ percentage }}%</span>
                 </template>
@@ -175,7 +176,7 @@ const apiLimitReached = computed(() => false)
 const successRate = computed(() => {
   const total = usageStats.value.total_calls || 0
   const failed = usageStats.value.failed_calls || 0
-  if (total === 0) return 100
+  if (total === 0) return 0
   return Math.round(((total - failed) / total) * 100)
 })
 

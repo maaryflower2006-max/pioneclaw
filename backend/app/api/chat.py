@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import time
 
 import httpx
@@ -14,7 +15,66 @@ from app.core import get_db
 from app.models import AIModelConfig, ApiUsage, User
 from app.modules.llm import SimpleLLMProvider
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["对话"])
+
+
+async def _record_api_usage(
+    db: AsyncSession,
+    user_id: int,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    duration_ms: int,
+    is_success: bool,
+    error_message: str | None = None,
+) -> None:
+    """记录 API 用量，失败时回滚并记录日志，不影响主流程。"""
+    try:
+        usage = ApiUsage(
+            user_id=user_id,
+            model=model or "unknown",
+            call_count=1,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+            duration_ms=duration_ms,
+            is_success=is_success,
+            error_message=error_message,
+        )
+        db.add(usage)
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        logger.warning(
+            f"API 用量记录失败: {e} | "
+            f"params=(user_id={user_id}, model={model}, is_success={is_success}, "
+            f"error_message={error_message})"
+        )
+
+
+async def _record_api_usage_from_provider(
+    db: AsyncSession,
+    user_id: int,
+    model: str,
+    provider: SimpleLLMProvider,
+    duration_ms: int,
+    is_success: bool,
+    error_message: str | None = None,
+) -> None:
+    """基于 provider token 记录 API 用量。"""
+    input_tokens = provider.last_input_tokens or 0
+    output_tokens = provider.last_output_tokens or 0
+    await _record_api_usage(
+        db=db,
+        user_id=user_id,
+        model=model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        duration_ms=duration_ms,
+        is_success=is_success,
+        error_message=error_message,
+    )
 
 
 class ChatMessage(BaseModel):
@@ -514,9 +574,18 @@ async def react_chat(
             f"ReAct completed in {latency_ms}ms, messages: {len(messages)}, thinking: {len(thinking_content) if thinking_content else 0} chars"
         )
 
-        # 获取 token 使用量
-        input_tokens = provider.last_input_tokens
-        output_tokens = provider.last_output_tokens
+        # 记录 API 用量
+        await _record_api_usage_from_provider(
+            db=db,
+            user_id=current_user.id,
+            model=config.model_name or "unknown",
+            provider=provider,
+            duration_ms=latency_ms,
+            is_success=True,
+        )
+
+        input_tokens = provider.last_input_tokens or 0
+        output_tokens = provider.last_output_tokens or 0
 
         return ReActResponse(
             success=True,
@@ -533,11 +602,25 @@ async def react_chat(
     except Exception as e:
         import traceback
 
+        latency_ms = int((time.time() - start_time) * 1000)
         logger.error(f"ReAct failed: {e}\n{traceback.format_exc()}")
+
+        # 记录失败的 API 调用（仅记录异常类型，避免泄露敏感信息）
+        await _record_api_usage(
+            db=db,
+            user_id=current_user.id,
+            model=config.model_name or "unknown",
+            input_tokens=0,
+            output_tokens=0,
+            duration_ms=latency_ms,
+            is_success=False,
+            error_message=type(e).__name__,
+        )
+
         return ReActResponse(
             success=False,
             message=f"执行失败: {str(e)}",
-            latency_ms=int((time.time() - start_time) * 1000),
+            latency_ms=latency_ms,
         )
 
 
@@ -778,22 +861,14 @@ async def react_chat_stream(
             latency_ms = int((time.time() - start_time) * 1000)
 
             # 记录 API 用量
-            try:
-                usage = ApiUsage(
-                    user_id=current_user.id,
-                    model=config.model_name or "unknown",
-                    provider=config.provider or "unknown",
-                    total_tokens=(provider.last_input_tokens or 0)
-                    + (provider.last_output_tokens or 0),
-                    input_tokens=provider.last_input_tokens or 0,
-                    output_tokens=provider.last_output_tokens or 0,
-                    duration_ms=latency_ms,
-                    is_success=True,
-                )
-                db.add(usage)
-                await db.commit()
-            except Exception:
-                pass  # 用量记录失败不影响对话
+            await _record_api_usage_from_provider(
+                db=db,
+                user_id=current_user.id,
+                model=config.model_name or "unknown",
+                provider=provider,
+                duration_ms=latency_ms,
+                is_success=True,
+            )
 
             # 确定最终响应
             final_response = content_buffer.strip() or last_good_content.strip()

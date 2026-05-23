@@ -47,10 +47,11 @@ python-dotenv==1.1.0
 PyYAML==6.0.3
 tomli==2.4.1                  # TOML parsing
 croniter>=2.0.0               # Cron expression scheduling
+loguru>=0.7.0                 # Structured logging
 
 # ── CLI Tools ──────────────────────────────────────────────────
 typer==0.25.1
-rich==13.7.1
+rich>=13.8.0
 
 # ── AI Integration (Optional) ──────────────────────────────────
 litellm==1.85.1               # Multi-provider LLM support
