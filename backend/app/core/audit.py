@@ -51,7 +51,10 @@ class AuditLogger:
 
     def __init__(self, log_dir: str = "~/.pioneclaw/audit"):
         self.log_path = Path(log_dir).expanduser()
-        self.log_path.mkdir(parents=True, exist_ok=True)
+        try:
+            self.log_path.mkdir(parents=True, exist_ok=True)
+        except (OSError, PermissionError) as e:
+            logger.error(f"无法创建审计日志目录 {self.log_path}: {e}")
 
     def _current_file(self) -> Path:
         """当前日志文件（按日期滚动）"""

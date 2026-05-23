@@ -1,9 +1,16 @@
 """Tests for PioneClaw CLI"""
 
+import re
 from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences (colors, bold, etc.) from terminal output."""
+    # Rich/Click may emit styles even with NO_COLOR=1
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 @pytest.fixture
@@ -30,11 +37,12 @@ class TestCLIHelp:
     def test_main_help(self, runner, cli_app):
         result = runner.invoke(cli_app, ["--help"])
         assert result.exit_code == 0
-        assert "chat" in result.output
-        assert "task" in result.output
-        assert "skill" in result.output
-        assert "run" in result.output
-        assert "version" in result.output
+        output = _strip_ansi(result.output)
+        assert "chat" in output
+        assert "task" in output
+        assert "skill" in output
+        assert "run" in output
+        assert "version" in output
 
     def test_chat_help(self, runner, cli_app):
         result = runner.invoke(cli_app, ["chat", "--help"])
@@ -57,11 +65,12 @@ class TestCLIHelp:
 
 class TestCLIRun:
     def test_run_help(self, runner, cli_app):
-        result = runner.invoke(cli_app, ["run", "--help"])
+        result = runner.invoke(cli_app, ["run", "--help"], env={"NO_COLOR": "1"})
         assert result.exit_code == 0
-        assert "--host" in result.output
-        assert "--port" in result.output
-        assert "--reload" in result.output
+        output = _strip_ansi(result.output)
+        assert "--host" in output
+        assert "--port" in output
+        assert "--reload" in output
 
 
 class TestCLITask:
@@ -102,11 +111,12 @@ class TestCLISkill:
 class TestCLIChat:
     def test_chat_start_help(self, runner, cli_app):
         """Test chat start command help"""
-        result = runner.invoke(cli_app, ["chat", "start", "--help"])
+        result = runner.invoke(cli_app, ["chat", "start", "--help"], env={"NO_COLOR": "1"})
         assert result.exit_code == 0
-        assert "--message" in result.output
-        assert "--model" in result.output
-        assert "--temperature" in result.output
+        output = _strip_ansi(result.output)
+        assert "--message" in output
+        assert "--model" in output
+        assert "--temperature" in output
 
 
 class TestCLIEntryPoint:

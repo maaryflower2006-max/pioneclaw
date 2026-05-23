@@ -16,6 +16,7 @@ Usage:
 import logging
 import sys
 from pathlib import Path
+from typing import Optional
 
 import typer
 
@@ -134,12 +135,12 @@ def run(
 
 @chat_app.command("start")
 def chat_start(
-    message: str | None = typer.Option(
+    message: Optional[str] = typer.Option(
         None, "--message", "-m", help="单次消息（非交互模式）"
     ),
-    model_config_id: int | None = typer.Option(None, "--model", help="模型配置 ID"),
-    temperature: float | None = typer.Option(None, "--temperature", "-t", help="温度"),
-    max_tokens: int | None = typer.Option(None, "--max-tokens", help="最大 token"),
+    model_config_id: Optional[int] = typer.Option(None, "--model", help="模型配置 ID"),
+    temperature: Optional[float] = typer.Option(None, "--temperature", "-t", help="温度"),
+    max_tokens: Optional[int] = typer.Option(None, "--max-tokens", help="最大 token"),
 ):
     """交互式对话"""
     import asyncio
@@ -148,10 +149,10 @@ def chat_start(
 
 
 async def _chat_interactive(
-    single_message: str | None = None,
-    model_config_id: int | None = None,
-    temperature: float | None = None,
-    max_tokens: int | None = None,
+    single_message: Optional[str] = None,
+    model_config_id: Optional[int] = None,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
 ):
     """交互式聊天实现"""
     from rich.console import Console
@@ -307,7 +308,7 @@ async def _send_message(provider, history: list, user_input: str, console):
 
 @task_app.command("list")
 def task_list(
-    status: str | None = typer.Option(None, "--status", "-s", help="按状态筛选"),
+    status: Optional[str] = typer.Option(None, "--status", "-s", help="按状态筛选"),
     limit: int = typer.Option(20, "--limit", "-n", help="显示数量"),
 ):
     """列出任务"""
@@ -316,7 +317,7 @@ def task_list(
     asyncio.run(_task_list(status, limit))
 
 
-async def _task_list(status_filter: str | None, limit: int):
+async def _task_list(status_filter: Optional[str], limit: int):
     from rich.console import Console
     from rich.table import Table
 

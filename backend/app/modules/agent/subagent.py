@@ -831,13 +831,8 @@ class SubagentManager:
 - 如果你用 exec 执行了耗时命令，任务会失败并重试""",
         }
 
-        # Try task_type first, then agent_type string
-        task_type_str = (
-            task.task_type.value
-            if hasattr(task.task_type, "value")
-            else str(task.task_type)
-        )
-        base = type_prompts.get(task_type_str, type_prompts[TaskType.GENERAL])
+        # type_prompts keys are TaskType enum objects, not strings
+        base = type_prompts.get(task.task_type, type_prompts[TaskType.GENERAL])
         return (
             f"{base}\n\n任务: {task.label}\n详情: {task.message}\n\n请专注于完成任务，给出清晰、详细的结果。禁止编造未获取的数据。"
             ""

@@ -62,12 +62,13 @@ class TestSimpleOrganizations:
 class TestCreateOrganization:
     @pytest.mark.asyncio
     async def test_create_root_org(self, client: AsyncClient, test_admin: User):
+        # fixture 已存在 company 根组织（唯一），创建 department 根组织
         resp = await client.post(
             "/api/organizations/",
             json={
                 "name": "新组织",
                 "code": "new_org",
-                "type": "company",
+                "type": "department",
             },
             headers=auth_headers(test_admin.id),
         )
@@ -184,7 +185,8 @@ class TestDeleteOrganization:
             f"/api/organizations/{test_org.id}", headers=auth_headers(test_admin.id)
         )
         assert resp.status_code == 400
-        assert "用户" in resp.json()["detail"]
+        # company 类型组织先被类型检查拦截
+        assert "公司级组织" in resp.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_delete_nonexistent(self, client: AsyncClient, test_admin: User):

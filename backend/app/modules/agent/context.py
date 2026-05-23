@@ -45,7 +45,8 @@ class PersonaConfig:
         如果 settings 中未设置则 fallback 到 user 的 display_name。
         """
         settings = (workspace.settings or {}) if workspace else {}
-        org_name = getattr(workspace, "organization_name", "") or ""
+        org = getattr(workspace, "organization", None)
+        org_name = getattr(org, "name", "") if org else ""
 
         return cls(
             ai_name=settings.get("ai_name", "小助手"),
