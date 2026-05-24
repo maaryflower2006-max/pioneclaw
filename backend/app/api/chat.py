@@ -2,18 +2,20 @@ import asyncio
 import json
 import logging
 import time
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.auth import get_current_active_user
 from app.core import get_db
-from app.models import AIModelConfig, ApiUsage, User
+from app.core.database import async_session_maker
+from app.models import AIModelConfig, ApiUsage, ChatTask, User
 from app.modules.llm import SimpleLLMProvider
 
 logger = logging.getLogger(__name__)
@@ -359,6 +361,56 @@ class CompactResponse(BaseModel):
     after_tokens: int = 0
     message: str = ""
     messages: list[dict] = []  # 压缩后的消息列表，前端用于替换当前会话
+
+
+# ==================== 任务持久化接口 ====================
+
+
+class CreateChatTaskRequest(BaseModel):
+    """创建聊天任务请求"""
+
+    message: str = Field(..., max_length=10000)
+    context: list[ChatMessage] | None = Field(default=None, max_length=20)
+    model_config_id: int | None = None
+    max_iterations: int = 10
+    enable_tools: bool = True
+    session_id: str | None = None
+    fast_mode: bool = False
+
+
+class CreateChatTaskResponse(BaseModel):
+    """创建聊天任务响应"""
+
+    success: bool
+    task_id: str
+    status: str  # queued / running
+    position: int | None = None
+    message: str = ""
+
+
+class ChatTaskDetail(BaseModel):
+    """聊天任务详情"""
+
+    task_id: str
+    session_id: str | None
+    status: str
+    final_response: str | None = None
+    thinking_content: str | None = None
+    tool_calls: list[dict] | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    latency_ms: int = 0
+    iterations: int = 0
+    error_message: str | None = None
+    created_at: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+
+
+# 模块级状态跟踪
+task_cancel_tokens: dict[str, Any] = {}
+task_handles: dict[str, asyncio.Task] = {}
+task_wait_futures: dict[str, asyncio.Future] = {}
 
 
 @router.post("/react", response_model=ReActResponse)
@@ -1058,3 +1110,541 @@ async def _persist_compacted_session(
 
     session.message_count = len(messages)
     await db.commit()
+
+
+# ==================== 聊天任务持久化实现 ====================
+
+
+async def _get_chat_task(
+    db: AsyncSession, task_id: str, user_id: int
+) -> "ChatTask | None":
+    """查询任务并验证所有权"""
+    from app.models import ChatTask
+
+    result = await db.execute(
+        select(ChatTask).where(ChatTask.id == task_id, ChatTask.user_id == user_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _run_chat_task(
+    task_id: str,
+    user_id: int,
+    request: CreateChatTaskRequest,
+    user_role: str,
+) -> None:
+    """在后台执行 AgentLoop 并将输出写入 buffer"""
+    from datetime import datetime, timezone
+
+    from app.core.concurrency import concurrency_manager
+    from app.core.execution_context import current_user_id
+    from app.models import ChatTask
+    from app.modules.agent import AgentLoop
+    from app.modules.agent.chat_task_buffer import get_buffer_registry
+    from app.modules.agent.chat_task_runner import ChatTaskRunner
+    from app.modules.agent.compactor import CompactionConfig, Compactor
+    from app.modules.agent.compression_service import ContextCompressionService
+    from app.modules.agent.context import ContextBuilder, PersonaConfig
+    from app.modules.agent.context_pruner import ContextPruner
+    from app.modules.agent.file_tracker import FileTracker
+    from app.modules.llm import SimpleLLMProvider
+    from app.modules.tools import ToolRegistry, register_builtin_tools
+
+    current_user_id.set(user_id)
+    buffer = get_buffer_registry().get_or_create(task_id)
+
+    # 每个后台任务使用独立的数据库会话
+    async with async_session_maker() as db:
+        try:
+            # 更新任务状态为 running
+            task = await db.get(ChatTask, task_id)
+            if task:
+                task.status = "running"
+                task.started_at = datetime.now(timezone.utc)
+                await db.commit()
+
+            # 获取模型配置
+            result = await db.execute(
+                select(AIModelConfig).where(
+                    AIModelConfig.id == request.model_config_id
+                )
+                if request.model_config_id
+                else select(AIModelConfig).where(AIModelConfig.is_default)
+            )
+            config = result.scalar_one_or_none()
+            if not config:
+                await buffer.mark_failed("没有可用的 AI 模型配置")
+                await _update_task_status(task_id, "failed", db, error="没有可用的 AI 模型配置")
+                return
+
+            # 创建工具注册表
+            tool_registry = ToolRegistry()
+            if request.enable_tools:
+                register_builtin_tools(tool_registry)
+
+            # 构建系统提示词
+            from app.models import Workspace
+
+            ws_result = await db.execute(
+                select(Workspace)
+                .options(selectinload(Workspace.organization))
+                .where(Workspace.owner_id == user_id, Workspace.is_default)
+            )
+            workspace = ws_result.scalar_one_or_none()
+            persona = PersonaConfig.from_workspace(workspace, None)
+            from pathlib import Path
+
+            ctx_builder = ContextBuilder(
+                persona_config=persona,
+                workspace=Path(workspace.path) if workspace and workspace.path else Path.home(),
+            )
+            system_prompt = ctx_builder.build_system_prompt() if request.enable_tools else None
+
+            # 创建 Provider
+            provider = SimpleLLMProvider(config=config)
+            provider.fast_mode = request.fast_mode
+
+            # Context 压缩组件
+            context_pruner = ContextPruner()
+            file_tracker = FileTracker(max_files=5, max_tokens=50_000)
+            compactor = Compactor(
+                config=CompactionConfig(),
+                llm_client=provider,
+                user_id=user_id,
+                session_id=request.session_id,
+            )
+            compression_service = ContextCompressionService(
+                budget=None,
+                compactor=compactor,
+                context_pruner=context_pruner,
+                file_tracker=file_tracker,
+            )
+
+            # 创建 AgentLoop
+            agent_loop = AgentLoop(
+                provider=provider,
+                tools=tool_registry,
+                system_prompt=system_prompt,
+                model=config.model_name,
+                context_window=config.context_window,
+                max_iterations=request.max_iterations,
+                temperature=config.temperature,
+                max_tokens=config.max_tokens,
+                session_id=request.session_id,
+                user_role=user_role,
+                context_pruner=context_pruner,
+                compactor=compactor,
+                compression_service=compression_service,
+                file_tracker=file_tracker,
+            )
+
+            # 创建 CancellationToken
+            from app.modules.agent.task_manager import CancellationToken
+
+            cancel_token = CancellationToken()
+            task_cancel_tokens[task_id] = cancel_token
+
+            # 构建上下文
+            context = None
+            if request.context:
+                context = [{"role": m.role, "content": m.content} for m in request.context]
+
+            # 运行 AgentLoop
+            runner = ChatTaskRunner(agent_loop, task_id, buffer)
+            result = await runner.run(
+                message=request.message,
+                context=context,
+                system_prompt=system_prompt,
+                cancel_token=cancel_token,
+            )
+
+            # 持久化结果
+            await _persist_task_result(task_id, result, db)
+
+        except asyncio.CancelledError:
+            await buffer.mark_failed("任务已取消")
+            await _update_task_status(task_id, "cancelled", db)
+        except Exception as e:
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.error(f"Chat task {task_id} failed: {e}", exc_info=True)
+            await buffer.mark_failed("任务执行失败，请稍后重试")
+            await _update_task_status(task_id, "failed", db, error="任务执行失败，请稍后重试")
+        finally:
+            concurrency_manager.release(user_id)
+            task_cancel_tokens.pop(task_id, None)
+            task_handles.pop(task_id, None)
+
+
+async def _wait_and_start_task(
+    task_id: str,
+    user_id: int,
+    request: CreateChatTaskRequest,
+    wait_future: asyncio.Future,
+    user_role: str,
+) -> None:
+    """等待排队完成，然后启动任务"""
+    from app.core.concurrency import concurrency_manager
+
+    try:
+        try:
+            await asyncio.wait_for(
+                wait_future,
+                timeout=concurrency_manager.queue_timeout_seconds,
+            )
+            if not wait_future.result():
+                # 排队被取消
+                concurrency_manager.release(user_id)
+                async with async_session_maker() as db:
+                    await _update_task_status(task_id, "cancelled", db, error="排队已取消")
+                return
+        except asyncio.TimeoutError:
+            concurrency_manager.release(user_id)
+            async with async_session_maker() as db:
+                await _update_task_status(task_id, "failed", db, error="排队超时")
+            return
+
+        # 启动实际执行
+        task = asyncio.create_task(_run_chat_task(task_id, user_id, request, user_role))
+        task_handles[task_id] = task
+        task_wait_futures.pop(task_id, None)
+    except Exception as e:
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.error(f"_wait_and_start_task {task_id} crashed: {e}", exc_info=True)
+        concurrency_manager.release(user_id)
+        async with async_session_maker() as db:
+            await _update_task_status(task_id, "failed", db, error="排队处理异常")
+
+
+async def _update_task_status(
+    task_id: str,
+    status: str,
+    db: AsyncSession,
+    error: str | None = None,
+) -> None:
+    """更新任务状态"""
+    from datetime import datetime, timezone
+
+    from app.models import ChatTask
+
+    task = await db.get(ChatTask, task_id)
+    if task:
+        task.status = status
+        if error:
+            task.error_message = error
+        if status in ("completed", "failed", "cancelled"):
+            task.completed_at = datetime.now(timezone.utc)
+        await db.commit()
+
+
+async def _persist_task_result(
+    task_id: str,
+    result: dict[str, Any],
+    db: AsyncSession,
+) -> None:
+    """任务完成后，将结果保存到 ChatTask 和 SessionMessage"""
+    from datetime import datetime, timezone
+
+    from app.models import ChatTask, Session, SessionMessage
+
+    task = await db.get(ChatTask, task_id)
+    if not task:
+        return
+
+    task.status = "completed"
+    task.final_response = result.get("final_response")
+    task.thinking_content = result.get("thinking_content")
+    task.input_tokens = result.get("input_tokens", 0)
+    task.output_tokens = result.get("output_tokens", 0)
+    task.latency_ms = result.get("latency_ms", 0)
+    task.iterations = result.get("iterations", 0)
+    task.output_chunks = result.get("output_chunks")
+    task.completed_at = datetime.now(timezone.utc)
+
+    # 解析 tool_calls 从 output_chunks
+    tool_calls = _extract_tool_calls_from_chunks(task.output_chunks)
+    task.tool_calls = tool_calls if tool_calls else None
+
+    # 保存 assistant 消息到 SessionMessage
+    if task.session_id and task.final_response:
+        msg = SessionMessage(
+            session_id=task.session_id,
+            role="assistant",
+            content=task.final_response,
+            reasoning_content=task.thinking_content,
+            tool_calls=tool_calls if tool_calls else None,
+        )
+        db.add(msg)
+
+        # 更新会话消息计数
+        session = await db.get(Session, task.session_id)
+        if session:
+            session.message_count = (session.message_count or 0) + 1
+            session.updated_at = datetime.now(timezone.utc)
+
+    await db.commit()
+
+
+def _extract_tool_calls_from_chunks(chunks: list[dict] | None) -> list[dict]:
+    """从 output_chunks 中提取 tool_calls"""
+    if not chunks:
+        return []
+
+    tool_calls = []
+    current_tool = None
+
+    for chunk in chunks:
+        t = chunk.get("type")
+        if t == "tool_start":
+            current_tool = {
+                "name": chunk.get("name", ""),
+                "tool_call_id": chunk.get("tool_call_id", ""),
+                "status": "running",
+            }
+        elif t == "tool_result" and current_tool:
+            current_tool["result"] = chunk.get("result", "")
+            current_tool["duration_ms"] = chunk.get("duration_ms")
+            current_tool["status"] = "success"
+            tool_calls.append(current_tool)
+            current_tool = None
+        elif t == "tool_error" and current_tool:
+            current_tool["error"] = chunk.get("error", "")
+            current_tool["duration_ms"] = chunk.get("duration_ms")
+            current_tool["status"] = "error"
+            tool_calls.append(current_tool)
+            current_tool = None
+
+    return tool_calls
+
+
+@router.post("/react/tasks", response_model=CreateChatTaskResponse)
+async def create_chat_task(
+    request: CreateChatTaskRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    创建聊天任务
+
+    返回 task_id，前端用 task_id 连接 SSE 流消费输出
+    """
+    import uuid
+    from datetime import datetime, timezone
+
+    from app.core.concurrency import concurrency_manager
+    from app.models import ChatTask
+
+    task_id = str(uuid.uuid4())
+
+    # 校验 session_id 归属（防止跨用户写入）
+    if request.session_id:
+        from app.models import Session
+
+        session = await db.get(Session, request.session_id)
+        if not session or session.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="无权访问该会话")
+
+    # 创建任务记录
+    chat_task = ChatTask(
+        id=task_id,
+        user_id=current_user.id,
+        session_id=request.session_id,
+        message=request.message,
+        context=[{"role": m.role, "content": m.content} for m in request.context]
+        if request.context
+        else None,
+        model_config_id=request.model_config_id,
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(chat_task)
+    await db.commit()
+
+    # 申请并发配额
+    result = await concurrency_manager.acquire(
+        current_user.id, task_id, len(request.message)
+    )
+
+    if result.rejected:
+        chat_task.status = "failed"
+        chat_task.error_message = "当前排队人数过多，请稍后重试"
+        chat_task.completed_at = datetime.now(timezone.utc)
+        await db.commit()
+        return CreateChatTaskResponse(
+            success=False,
+            task_id=task_id,
+            status="failed",
+            message="当前排队人数过多，请稍后重试",
+        )
+
+    if result.queued:
+        chat_task.status = "queued"
+        await db.commit()
+        # 记录 wait_future，以便取消时可以中断排队
+        task_wait_futures[task_id] = result.wait_future
+        # 启动后台等待任务
+        asyncio.create_task(
+            _wait_and_start_task(
+                task_id=task_id,
+                user_id=current_user.id,
+                request=request,
+                wait_future=result.wait_future,
+                user_role=current_user.role,
+            )
+        )
+        return CreateChatTaskResponse(
+            success=True,
+            task_id=task_id,
+            status="queued",
+            position=result.position,
+            message=f"排队中，前方还有 {result.position} 个任务",
+        )
+
+    # 直接启动
+    chat_task.status = "running"
+    chat_task.started_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    # 预创建 buffer，避免前端立即连接时 race condition
+    from app.modules.agent.chat_task_buffer import get_buffer_registry
+    get_buffer_registry().get_or_create(task_id)
+
+    task = asyncio.create_task(_run_chat_task(task_id, current_user.id, request, current_user.role))
+    task_handles[task_id] = task
+
+    return CreateChatTaskResponse(
+        success=True,
+        task_id=task_id,
+        status="running",
+    )
+
+
+@router.get("/react/tasks/{task_id}", response_model=ChatTaskDetail)
+async def get_chat_task(
+    task_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """获取任务状态和结果"""
+    task = await _get_chat_task(db, task_id, current_user.id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    return ChatTaskDetail(
+        task_id=task.id,
+        session_id=task.session_id,
+        status=task.status,
+        final_response=task.final_response,
+        thinking_content=task.thinking_content,
+        tool_calls=task.tool_calls,
+        input_tokens=task.input_tokens,
+        output_tokens=task.output_tokens,
+        latency_ms=task.latency_ms,
+        iterations=task.iterations,
+        error_message=task.error_message,
+        created_at=task.created_at.isoformat() if task.created_at else None,
+        started_at=task.started_at.isoformat() if task.started_at else None,
+        completed_at=task.completed_at.isoformat() if task.completed_at else None,
+    )
+
+
+@router.get("/react/tasks/{task_id}/stream")
+async def stream_chat_task(
+    task_id: str,
+    offset: int = 0,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """SSE 流式消费任务输出，支持从指定 offset 重连"""
+    from app.modules.agent.chat_task_buffer import get_buffer_registry
+
+    # 验证任务所有权
+    task = await _get_chat_task(db, task_id, current_user.id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    buffer = get_buffer_registry().get(task_id)
+
+    # 任务已完成且 buffer 已清理：从 DB 重放
+    if buffer is None and task.status in ("completed", "failed", "cancelled"):
+        async def replay_from_db():
+            chunks = task.output_chunks or []
+            for i, chunk in enumerate(chunks):
+                if i >= offset:
+                    data = {**chunk, "_chunk_index": i}
+                    yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+            # 发送 done 事件
+            done_event = {
+                "type": "done",
+                "response": task.final_response or "(未获取到有效回复)",
+                "thinking_content": task.thinking_content,
+                "latency_ms": task.latency_ms,
+                "input_tokens": task.input_tokens,
+                "output_tokens": task.output_tokens,
+            }
+            yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(replay_from_db(), media_type="text/event-stream")
+
+    # buffer 丢失且任务尚未完成：返回 410，前端降级到 REST API 查询
+    if buffer is None:
+        raise HTTPException(status_code=410, detail="任务输出已过期，无法恢复")
+
+    # 从 buffer 消费
+    async def generate():
+        async for chunk in buffer.consume_from(offset):
+            if chunk.index == -1:  # keepalive
+                yield ":keepalive\n\n"
+            else:
+                data = {**chunk.data, "_chunk_index": chunk.index}
+                yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@router.post("/react/tasks/{task_id}/cancel")
+async def cancel_chat_task(
+    task_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """取消正在运行的任务"""
+    from app.modules.agent.chat_task_buffer import get_buffer_registry
+
+    task = await _get_chat_task(db, task_id, current_user.id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    if task.status not in ("queued", "running"):
+        return {"success": False, "message": f"任务状态为 {task.status}，无法取消"}
+
+    # 1. 取消排队中的 wait_future
+    wait_future = task_wait_futures.pop(task_id, None)
+    if wait_future and not wait_future.done():
+        wait_future.set_result(False)
+
+    # 2. 取消 CancellationToken
+    cancel_token = task_cancel_tokens.pop(task_id, None)
+    if cancel_token:
+        cancel_token.cancel()
+
+    # 3. 取消 asyncio.Task
+    task_handle = task_handles.pop(task_id, None)
+    if task_handle and not task_handle.done():
+        task_handle.cancel()
+
+    # 4. 标记 buffer 失败
+    buffer = get_buffer_registry().get(task_id)
+    if buffer:
+        await buffer.mark_failed("用户取消")
+
+    # 5. 更新 DB
+    from datetime import datetime, timezone
+
+    task.status = "cancelled"
+    task.completed_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    return {"success": True, "message": "任务已取消"}

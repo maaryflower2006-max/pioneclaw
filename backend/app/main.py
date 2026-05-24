@@ -65,8 +65,15 @@ async def lifespan(app: FastAPI):
             f"[Startup] Provider 预检完成: {healthy}/{len(preflight_results)} healthy"
         )
 
+    # 启动 ChatTaskBuffer TTL 清理循环
+    from app.modules.agent.chat_task_buffer import get_buffer_registry
+
+    await get_buffer_registry().start_cleanup_loop()
+
     yield
+
     # 关闭时清理资源
+    await get_buffer_registry().stop_cleanup_loop()
 
 
 app = FastAPI(

@@ -379,6 +379,7 @@ import DOMPurify from 'dompurify'
 import { logger } from '../utils/logger'
 import { useMessageStreaming } from '@/composables/useMessageStreaming'
 import { useChatRealtime } from '@/composables/useChatRealtime'
+import { createChatTask, cancelChatTask, getChatTask } from '@/api/chatTasks'
 import type { ChatMessage, StreamRealtimeMessage } from '@/types/chat'
 
 const { locale, t: $t } = useI18n()
@@ -404,6 +405,7 @@ const activeTools = ref<Map<string, ToolExecution>>(new Map())
 
 // ─── 流式消息状态（reducer 架构）───
 const {
+  runtime,
   messages: streamMessages,
   isStreaming: isStreamActive,
   dispatchStreamEvent,
@@ -452,7 +454,7 @@ const displayMessages = computed(() => {
     }))
 })
 
-const { startStream } = useChatRealtime({
+const { startTaskStream, cancelActiveStream } = useChatRealtime({
   dispatchStreamEvent: wrappedDispatch,
   getCurrentSessionId: () => currentConversation.value?.sessionId || null,
   cacheSessionMessages,
@@ -599,14 +601,26 @@ function disconnectWebSocket() {
 }
 
 // 取消当前任务
-function cancelCurrentTask() {
+async function cancelCurrentTask() {
   const sessionId = currentConversation.value?.sessionId
+  const taskId = sessionId ? sessionStorage.getItem(`pioneclaw_active_task_${sessionId}`) : null
+
+  // 优先使用 REST API 取消任务
+  if (taskId) {
+    try {
+      await cancelChatTask(taskId)
+      ElMessage.warning($t('chat.cancelSent'))
+    } catch (e) {
+      console.error('Cancel task failed:', e)
+    }
+  }
+
+  // 保留 WebSocket cancel 作为后备
   if (sessionId && ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({
       type: 'cancel',
       session_id: sessionId
     }))
-    ElMessage.warning($t('chat.cancelSent'))
   }
 }
 
@@ -996,6 +1010,8 @@ function saveConversations() {
 
 // 新建对话
 async function newConversation() {
+  // 取消任何正在运行的流
+  await cancelActiveStream()
   syncCurrentMessagesToConv()
   clearMessages()
   try {
@@ -1038,6 +1054,9 @@ function syncCurrentMessagesToConv() {
 
 // 选择对话
 async function selectConversation(conv: Conversation) {
+  // 取消任何正在运行的流，避免旧流继续向新会话分发事件
+  await cancelActiveStream()
+
   syncCurrentMessagesToConv()
   currentConversation.value = conv
   inputMessage.value = conv.draftText || ''
@@ -1084,11 +1103,13 @@ async function selectConversation(conv: Conversation) {
   // 3. 尝试从 sessionStorage 读取流式中断状态（不修改 runtime）
   let cacheMessages: ChatMessage[] = []
   let cacheIsStreaming = false
+  let cacheCurrentStreamingMessageId: string | null = null
   if (conv.sessionId) {
     const cache = readSessionMessages(conv.sessionId)
     if (cache && cache.messages.length > 0) {
       cacheMessages = cache.messages
       cacheIsStreaming = cache.isStreaming
+      cacheCurrentStreamingMessageId = cache.currentStreamingMessageId
     }
   }
 
@@ -1098,7 +1119,98 @@ async function selectConversation(conv: Conversation) {
   }
 
   replaceMessages(loadedMessages)
+
+  // 恢复流式消息 ID，让重连后的新 chunk 能追加到现有消息而非创建新消息
+  if (cacheIsStreaming && cacheCurrentStreamingMessageId) {
+    runtime.value.currentStreamingMessageId = cacheCurrentStreamingMessageId
+  }
+
   scrollToBottom(100)
+
+  // 检查是否有未完成的活跃任务
+  if (conv.sessionId) {
+    recoverActiveTask(conv.sessionId)
+  }
+}
+
+// 恢复活跃任务（刷新后重连）
+async function recoverActiveTask(sessionId: string) {
+  // 先取消任何可能仍在运行的旧流实例
+  await cancelActiveStream()
+
+  const taskId = sessionStorage.getItem(`pioneclaw_active_task_${sessionId}`)
+  if (!taskId) return false
+
+  try {
+    const task = await getChatTask(taskId)
+
+    if (task.status === 'running' || task.status === 'queued') {
+      // 任务仍在运行，重新连接 SSE
+      loadingConversationId.value = currentConversation.value?.id || null
+      sseActive.value = true
+
+      const token = getAccessToken() || localStorage.getItem('token') || ''
+      try {
+        await startTaskStream(taskId, token, () => {
+          sseActive.value = false
+          loadingConversationId.value = null
+          // 流式结束后同步回 conversation
+          if (currentConversation.value) {
+            currentConversation.value.messages = [...streamMessages.value]
+            saveConversations()
+          }
+          sessionStorage.removeItem(`pioneclaw_active_task_${sessionId}`)
+          sessionStorage.removeItem(`pioneclaw_task_offset_${taskId}`)
+        })
+      } catch {
+        // 恢复失败（如 410 缓存丢失），取消僵尸任务
+        try { await cancelChatTask(taskId) } catch { /* ignore */ }
+        sessionStorage.removeItem(`pioneclaw_active_task_${sessionId}`)
+        sessionStorage.removeItem(`pioneclaw_task_offset_${taskId}`)
+        sseActive.value = false
+        loadingConversationId.value = null
+      }
+
+      return true
+    } else if (task.status === 'completed') {
+      // 任务已完成，从 DB 加载结果
+      if (task.final_response) {
+        addMessage({
+          id: `msg-${Date.now()}`,
+          role: 'assistant',
+          content: task.final_response,
+          reasoningContent: task.thinking_content || undefined,
+          latency: task.latency_ms,
+          input_tokens: task.input_tokens,
+          output_tokens: task.output_tokens,
+          timestamp: new Date(),
+        })
+      }
+      sessionStorage.removeItem(`pioneclaw_active_task_${sessionId}`)
+      sessionStorage.removeItem(`pioneclaw_task_offset_${taskId}`)
+      return true
+    } else if (task.status === 'failed' || task.status === 'cancelled') {
+      // 任务失败/取消，显示错误
+      if (task.error_message) {
+        addMessage({
+          id: `msg-${Date.now()}`,
+          role: 'assistant',
+          content: `⚠️ ${task.error_message}`,
+          timestamp: new Date(),
+        })
+      }
+      sessionStorage.removeItem(`pioneclaw_active_task_${sessionId}`)
+      sessionStorage.removeItem(`pioneclaw_task_offset_${taskId}`)
+      return true
+    }
+  } catch (e) {
+    console.error('Failed to recover task:', e)
+    sessionStorage.removeItem(`pioneclaw_active_task_${sessionId}`)
+    sessionStorage.removeItem(`pioneclaw_task_offset_${taskId}`)
+    return false
+  }
+
+  return false
 }
 
 // 确认删除指定对话
@@ -1370,19 +1482,38 @@ async function sendMessage() {
 
     const token = getAccessToken() || localStorage.getItem('token') || ''
 
-    await startStream(
-      '/api/chat/react/stream',
-      {
-        message: userMessage,
-        context: contextMessages.length > 0 ? contextMessages : undefined,
-        model_config_id: selectedModelId.value,
-        enable_tools: true,
-        max_iterations: 10,
-        session_id: sessionId,
-        fast_mode: false,
-      },
-      token
-    )
+      // 取消任何正在运行的旧流（防止旧流干扰新流）
+    await cancelActiveStream()
+
+    // 如果同会话有未完成的旧任务，先取消后端任务并清理 offset 缓存
+    const oldTaskId = sessionStorage.getItem(`pioneclaw_active_task_${sessionId}`)
+    if (oldTaskId) {
+      try { await cancelChatTask(oldTaskId) } catch { /* ignore */ }
+      sessionStorage.removeItem(`pioneclaw_active_task_${sessionId}`)
+      sessionStorage.removeItem(`pioneclaw_task_offset_${oldTaskId}`)
+    }
+
+    // Phase 1: 创建任务
+    const taskResponse = await createChatTask({
+      message: userMessage,
+      context: contextMessages.length > 0 ? contextMessages : undefined,
+      model_config_id: selectedModelId.value,
+      enable_tools: true,
+      max_iterations: 10,
+      session_id: sessionId,
+      fast_mode: false,
+    })
+
+    if (!taskResponse.success) {
+      throw new Error(taskResponse.message || '创建任务失败')
+    }
+
+    // 保存 task_id 到 sessionStorage（用于刷新后恢复）
+    const taskId = taskResponse.task_id
+    sessionStorage.setItem(`pioneclaw_active_task_${sessionId}`, taskId)
+
+    // Phase 2: 连接 SSE 流（支持自动重连）
+    await startTaskStream(taskId, token)
 
     // 流式结束后同步回 conversation
     targetConversation.messages = [...streamMessages.value]
@@ -1418,6 +1549,10 @@ async function sendMessage() {
     targetConversation.updatedAt = new Date()
     saveConversations()
     scrollToBottom()
+    // 清理活跃任务标记
+    if (targetConversation.sessionId) {
+      sessionStorage.removeItem(`pioneclaw_active_task_${targetConversation.sessionId}`)
+    }
   }
 }
 
@@ -1664,11 +1799,13 @@ onMounted(async () => {
     // 3. 尝试从 sessionStorage 读取流式中断状态（不修改 runtime）
     let cacheMessages: ChatMessage[] = []
     let cacheIsStreaming = false
+    let cacheCurrentStreamingMessageId: string | null = null
     if (firstConv.sessionId) {
       const cache = readSessionMessages(firstConv.sessionId)
       if (cache && cache.messages.length > 0) {
         cacheMessages = cache.messages
         cacheIsStreaming = cache.isStreaming
+        cacheCurrentStreamingMessageId = cache.currentStreamingMessageId
       }
     }
 
@@ -1678,7 +1815,18 @@ onMounted(async () => {
     }
 
     replaceMessages(loadedMessages)
+
+    // 恢复流式消息 ID，让重连后的新 chunk 能追加到现有消息而非创建新消息
+    if (cacheIsStreaming && cacheCurrentStreamingMessageId) {
+      runtime.value.currentStreamingMessageId = cacheCurrentStreamingMessageId
+    }
+
     scrollToBottom(100)
+
+    // 检查是否有未完成的活跃任务
+    if (firstConv.sessionId) {
+      recoverActiveTask(firstConv.sessionId)
+    }
   }
   // 连接 WebSocket
   connectWebSocket()

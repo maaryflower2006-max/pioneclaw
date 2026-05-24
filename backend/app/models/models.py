@@ -626,6 +626,52 @@ class AgentExecution(Base):
     )
 
 
+class ChatTask(Base):
+    """聊天任务 — 支持流式输出缓冲和刷新恢复"""
+
+    __tablename__ = "chat_tasks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)  # UUID
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    session_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("chat_sessions.id"), index=True, nullable=True
+    )
+
+    # 输入
+    message: Mapped[str] = mapped_column(Text)
+    context: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model_config_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ai_model_configs.id"), nullable=True
+    )
+
+    # 执行状态
+    status: Mapped[str] = mapped_column(String(20), default="queued")
+    # queued -> running -> completed / failed / cancelled
+
+    # 输出（完成后归档，运行中时由内存缓冲服务）
+    output_chunks: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+    # 最终结果
+    final_response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    thinking_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tool_calls: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+    # 统计
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    iterations: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # 时间
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class Session(Base):
     """聊天会话"""
 

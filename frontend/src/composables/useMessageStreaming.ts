@@ -77,7 +77,7 @@ export function useMessageStreaming() {
     }
   }
 
-  function readSessionMessages(sessionId: string): { messages: ChatMessage[]; timestamp: number; isStreaming: boolean } | null {
+  function readSessionMessages(sessionId: string): { messages: ChatMessage[]; timestamp: number; isStreaming: boolean; currentStreamingMessageId: string | null } | null {
     try {
       const raw = sessionStorage.getItem(SESSION_MESSAGES_CACHE_KEY(sessionId))
       if (!raw) return null
@@ -94,6 +94,7 @@ export function useMessageStreaming() {
         messages,
         timestamp: data.timestamp,
         isStreaming: data.isStreaming || false,
+        currentStreamingMessageId: data.currentStreamingMessageId || null,
       }
     } catch {
       return null
