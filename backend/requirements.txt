@@ -25,7 +25,7 @@ passlib[bcrypt]==1.7.4
 
 # ── HTTP Client ────────────────────────────────────────────────
 httpx==0.28.1
-websockets==13.1              # WebSocket support
+websockets==16.0              # WebSocket support
 
 # ── Document Parsing ─────────────────────────────────────────────
 python-docx==1.2.0               # Word .docx reading
