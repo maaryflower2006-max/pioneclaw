@@ -412,6 +412,7 @@ const {
   replaceMessages,
   clearMessages,
   addMessage,
+  updateLastProcessedChunkIndex,
   cacheSessionMessages,
   readSessionMessages,
 } = useMessageStreaming()
@@ -458,6 +459,8 @@ const { startTaskStream, cancelActiveStream } = useChatRealtime({
   dispatchStreamEvent: wrappedDispatch,
   getCurrentSessionId: () => currentConversation.value?.sessionId || null,
   cacheSessionMessages,
+  getLastProcessedChunkIndex: () => runtime.value.lastProcessedChunkIndex,
+  updateLastProcessedChunkIndex,
   onError: (msg: string) => {
     ElMessage.error(msg)
     // 添加一条 assistant 错误消息，避免 UI 卡在 loading 且无内容
@@ -570,22 +573,9 @@ function handleWebSocketMessage(data: any) {
       logger.log('Agent complete:', data.total_iterations, 'iterations')
       break
 
-    // 流式响应块 - 需要检查 session_id 是否匹配当前会话
-    // 当 SSE 流正在进行时，忽略 WebSocket 的 stream_chunk/stream_end 避免重复/冲突
-    case 'stream_chunk':
-      {
-        if (sseActive.value) break
-        const currentSessId = currentConversation.value?.sessionId
-        if (currentSessId && data.session_id === currentSessId) {
-          dispatchStreamEvent({ type: 'content', content: data.chunk })
-        }
-      }
-      break
-
-    case 'stream_end':
-      if (sseActive.value) break
-      dispatchStreamEvent({ type: 'message_complete' })
-      break
+    // 已迁移到 task-based SSE，WebSocket 流式输出逻辑已废弃
+    // case 'stream_chunk':
+    // case 'stream_end':
   }
 }
 
@@ -1144,17 +1134,16 @@ function addAssistantMessageIfNotDuplicate(
   content: string,
   extra?: Partial<ChatMessage>
 ) {
-  const lastAssistant = [...streamMessages.value]
+  const normalized = content.trim()
+  const prefixRe = /^(?:[⚠️❗✅❌]\s*)+/
+  const existing = [...streamMessages.value]
     .reverse()
-    .find((m) => m.role === 'assistant')
-  if (lastAssistant) {
-    const lastContent = lastAssistant.content?.trim() || ''
-    const newContent = content.trim()
-    if (lastContent === newContent) return
-    // 兼容：历史消息可能带/不带 ⚠️❗ 等前缀，去掉前缀后再比较一次
-    const prefixRe = /^(?:[⚠️❗✅❌]\s*)+/
-    if (lastContent.replace(prefixRe, '') === newContent.replace(prefixRe, '')) return
-  }
+    .find((m) => {
+      if (m.role !== 'assistant') return false
+      const c = m.content?.trim() || ''
+      return c === normalized || c.replace(prefixRe, '') === normalized.replace(prefixRe, '')
+    })
+  if (existing) return
   addMessage({
     id: `msg-${Date.now()}`,
     role: 'assistant',
@@ -1166,7 +1155,7 @@ function addAssistantMessageIfNotDuplicate(
 
 // 恢复活跃任务（刷新后重连）
 async function recoverActiveTask(sessionId: string) {
-  // 先取消任何可能仍在运行的旧流实例
+  // 取消任何可能仍在运行的旧流实例（不清空消息，历史消息已由 loadSessionMessages 加载）
   await cancelActiveStream()
 
   const taskId = sessionStorage.getItem(`pioneclaw_active_task_${sessionId}`)
@@ -1212,6 +1201,8 @@ async function recoverActiveTask(sessionId: string) {
           input_tokens: task.input_tokens,
           output_tokens: task.output_tokens,
         })
+        // 标记消息完成，防止后续操作误把当前消息当流式消息追加
+        dispatchStreamEvent({ type: 'message_complete' })
       }
       sessionStorage.removeItem(`pioneclaw_active_task_${sessionId}`)
       sessionStorage.removeItem(`pioneclaw_task_offset_${taskId}`)
@@ -1598,38 +1589,90 @@ async function regenerate(index: number) {
   replaceMessages(messages)
   currentConversation.value!.messages = [...messages]
 
-  // 重新发送
   const targetConversation = currentConversation.value
   loadingConversationId.value = targetConversation!.id
+
   try {
-    const response = await longApi.post('/chat/completions', {
-      messages: messages.map(m => ({ role: m.role, content: m.content })),
-      model_config_id: selectedModelId.value
+    sseActive.value = true
+    const sessionId = targetConversation!.sessionId || crypto.randomUUID()
+    if (!targetConversation!.sessionId) {
+      targetConversation!.sessionId = sessionId
+    }
+
+    // 构造 context（排除当前用户消息，限制最近 30 条）
+    const MAX_CONTEXT_MESSAGES = 30
+    const userMsgIndex = messages.findIndex(m => m.id === lastUserMsg.id)
+    const contextMessages = messages
+      .slice(0, userMsgIndex)
+      .filter((m) => !m.isStreaming && m.role)
+      .slice(-MAX_CONTEXT_MESSAGES)
+      .map((m) => ({ role: m.role, content: m.content }))
+
+    const token = getAccessToken() || localStorage.getItem('token') || ''
+
+    // 取消任何正在运行的旧流
+    await cancelActiveStream()
+
+    // 如果同会话有未完成的旧任务，先取消
+    const oldTaskId = sessionStorage.getItem(`pioneclaw_active_task_${sessionId}`)
+    if (oldTaskId) {
+      try { await cancelChatTask(oldTaskId) } catch { /* ignore */ }
+      sessionStorage.removeItem(`pioneclaw_active_task_${sessionId}`)
+      sessionStorage.removeItem(`pioneclaw_task_offset_${oldTaskId}`)
+    }
+
+    // Phase 1: 创建任务
+    const taskResponse = await createChatTask({
+      message: lastUserMsg.content,
+      context: contextMessages.length > 0 ? contextMessages : undefined,
+      model_config_id: selectedModelId.value,
+      enable_tools: true,
+      max_iterations: 10,
+      session_id: sessionId,
+      fast_mode: false,
     })
 
-    if (response.data.success) {
-      // 去除回复开头的多余空行
-      let content = response.data.response
-      content = content.replace(/^\n{2,}/, '\n').replace(/^\s{2,}/, '')
+    if (!taskResponse.success) {
+      throw new Error(taskResponse.message || '创建任务失败')
+    }
 
-      const assistantMsg: ChatMessage = {
+    const taskId = taskResponse.task_id
+    sessionStorage.setItem(`pioneclaw_active_task_${sessionId}`, taskId)
+
+    // Phase 2: 连接 SSE 流
+    await startTaskStream(taskId, token)
+
+    // 流式结束后同步回 conversation（后端 _persist_task_result 已自动保存，前端不再重复保存）
+    targetConversation!.messages = [...streamMessages.value]
+  } catch (error: any) {
+    console.error('regenerate error:', error)
+    const msg = error.message || ''
+    if (msg.includes('401')) {
+      addMessage({
         id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         role: 'assistant',
-        content: content,
-        latency: response.data.latency_ms,
-        input_tokens: response.data.usage?.input_tokens,
-        output_tokens: response.data.usage?.output_tokens,
+        content: '⚠️ 登录已过期，请重新登录',
         timestamp: new Date(),
-      }
-      addMessage(assistantMsg)
-      targetConversation!.messages = [...streamMessages.value]
-    } else {
-      ElMessage.error(response.data.message)
+      })
+      localStorage.removeItem('token')
+      setTimeout(() => { window.location.href = '/login' }, 1000)
+      return
     }
-  } catch (error: any) {
-    ElMessage.error(error.response?.data?.detail || $t('chat.requestFailed'))
+    let errorMsg = error.response?.data?.detail || error.detail || msg || $t('chat.requestFailed')
+    if (Array.isArray(errorMsg)) {
+      errorMsg = errorMsg.map((e: any) => e.msg || JSON.stringify(e)).join('; ')
+    } else if (typeof errorMsg !== 'string') {
+      errorMsg = JSON.stringify(errorMsg)
+    }
+    addMessage({
+      id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      role: 'assistant',
+      content: `⚠️ ${errorMsg}`,
+      timestamp: new Date(),
+    })
   } finally {
     loadingConversationId.value = null
+    sseActive.value = false
     saveConversations()
     scrollToBottom()
   }
@@ -2312,15 +2355,12 @@ onUnmounted(() => {
         }
 
         .bubble-actions {
-          position: absolute;
-          left: calc(100% + 8px);
-          top: 50%;
-          transform: translateY(-50%);
+          display: flex;
+          justify-content: flex-end;
+          gap: 4px;
+          margin-top: 4px;
           opacity: 0;
           transition: opacity 0.2s;
-          display: flex;
-          gap: 4px;
-          white-space: nowrap;
         }
 
         &:hover .bubble-actions {

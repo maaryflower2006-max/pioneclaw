@@ -13,6 +13,7 @@ export function createInitialChatStreamState(): ChatStreamRuntimeState {
     isStreaming: false,
     currentStreamingMessageId: null,
     isStopping: false,
+    lastProcessedChunkIndex: -1,
   }
 }
 
@@ -92,6 +93,11 @@ export function chatStreamReducer(
       return reduceStopStreaming(state)
     case 'clear_messages':
       return createInitialChatStreamState()
+    case 'update_chunk_index':
+      return {
+        ...state,
+        lastProcessedChunkIndex: action.index,
+      }
     default:
       return state
   }
@@ -126,9 +132,11 @@ function reduceMessageChunk(
   }
 
   const currentMessage = state.messages[currentIndex]
-  const updatedMessage: ChatMessage = currentMessage.isThinking
-    ? { ...currentMessage, isThinking: false, content }
-    : { ...currentMessage, content: `${currentMessage.content || ''}${content}` }
+  const updatedMessage: ChatMessage = {
+    ...currentMessage,
+    isThinking: false,
+    content: `${currentMessage.content || ''}${content}`,
+  }
 
   return {
     ...state,

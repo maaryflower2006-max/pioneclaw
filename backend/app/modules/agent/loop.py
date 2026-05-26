@@ -1366,6 +1366,15 @@ class AgentLoop:
         if hasattr(chunk, "thinking") and chunk.thinking:
             result["thinking"] = chunk.thinking
 
+        # 处理 reasoning_content 字段（DeepSeek / OpenAI reasoning）
+        reasoning_content = None
+        if hasattr(chunk, "reasoning_content") and chunk.reasoning_content:
+            reasoning_content = chunk.reasoning_content
+        elif hasattr(chunk, "delta") and chunk.delta and chunk.delta.get("reasoning_content"):
+            reasoning_content = chunk.delta["reasoning_content"]
+        if reasoning_content:
+            result["reasoning_content"] = reasoning_content
+
         # 处理 usage 字段
         if hasattr(chunk, "usage") and chunk.usage:
             result["usage"] = chunk.usage

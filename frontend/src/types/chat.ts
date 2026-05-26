@@ -80,6 +80,8 @@ export interface ChatStreamRuntimeState {
   currentStreamingMessageId: string | null
   /** 是否正在停止流式输出 */
   isStopping: boolean
+  /** 最后处理过的 chunk index（用于断点续发去重） */
+  lastProcessedChunkIndex: number
 }
 
 export type StreamRealtimeMessage = Record<string, any> & {
@@ -99,3 +101,4 @@ export type ChatStreamAction =
   | { type: 'message_complete'; payload?: StreamRealtimeMessage }
   | { type: 'stop_streaming' }
   | { type: 'clear_messages' }
+  | { type: 'update_chunk_index'; index: number }

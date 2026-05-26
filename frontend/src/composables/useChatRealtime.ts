@@ -5,6 +5,8 @@ interface UseChatRealtimeOptions {
   dispatchStreamEvent: (message: StreamRealtimeMessage) => void
   getCurrentSessionId: () => string | null
   cacheSessionMessages: (sessionId: string) => void
+  getLastProcessedChunkIndex: () => number
+  updateLastProcessedChunkIndex: (index: number) => void
   onError?: (message: string) => void
 }
 
@@ -94,6 +96,12 @@ export function useChatRealtime(options: UseChatRealtimeOptions) {
       return
     }
 
+    // 防御性去重：已处理过的 chunk 不再分发
+    if (data._chunk_index !== undefined && data._chunk_index <= options.getLastProcessedChunkIndex()) {
+      console.log('[SSE] ignore duplicated chunk:', data._chunk_index)
+      return
+    }
+
     if (data.type === 'error') {
       // 错误事件也要停止 streaming，避免 UI 一直卡在 loading
       options.dispatchStreamEvent({ type: 'stop_streaming' })
@@ -112,6 +120,7 @@ export function useChatRealtime(options: UseChatRealtimeOptions) {
     if (data._chunk_index !== undefined && activeTaskId) {
       try {
         sessionStorage.setItem(`pioneclaw_task_offset_${activeTaskId}`, String(data._chunk_index))
+        options.updateLastProcessedChunkIndex(data._chunk_index)
       } catch { /* ignore storage failures */ }
     }
 

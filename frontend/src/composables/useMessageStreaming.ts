@@ -62,6 +62,10 @@ export function useMessageStreaming() {
     applyAction({ type: 'add_message', message })
   }
 
+  function updateLastProcessedChunkIndex(index: number) {
+    applyAction({ type: 'update_chunk_index', index })
+  }
+
   /* ─── 会话缓存 ─── */
   function cacheSessionMessages(sessionId: string) {
     try {
@@ -124,6 +128,7 @@ export function useMessageStreaming() {
     clearMessages,
     stopStreaming,
     addMessage,
+    updateLastProcessedChunkIndex,
     cacheSessionMessages,
     readSessionMessages,
     restoreSessionMessages,

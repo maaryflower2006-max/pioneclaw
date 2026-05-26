@@ -112,6 +112,14 @@ class ChatTaskBuffer:
         async with self._lock:
             self._completed = True
             self._final_result = final_result
+            # 把 done 事件也加入 _chunks，保证归档一致性和 replay_from_db 完整性
+            done_chunk = BufferedChunk(
+                index=self._next_index,
+                data={"type": "done", **final_result},
+                timestamp=time.time(),
+            )
+            self._chunks.append(done_chunk)
+            self._next_index += 1
             self._new_chunk_event.set()
             return [c.data for c in self._chunks]
 

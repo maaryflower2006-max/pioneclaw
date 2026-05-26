@@ -1576,20 +1576,25 @@ async def stream_chat_task(
     if buffer is None and task.status in ("completed", "failed", "cancelled"):
         async def replay_from_db():
             chunks = task.output_chunks or []
+            has_done = False
             for i, chunk in enumerate(chunks):
                 if i >= offset:
                     data = {**chunk, "_chunk_index": i}
                     yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-            # 发送 done 事件
-            done_event = {
-                "type": "done",
-                "response": task.final_response or "(未获取到有效回复)",
-                "thinking_content": task.thinking_content,
-                "latency_ms": task.latency_ms,
-                "input_tokens": task.input_tokens,
-                "output_tokens": task.output_tokens,
-            }
-            yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
+                if chunk.get("type") == "done":
+                    has_done = True
+            # 只有 output_chunks 中不包含 done 时才补发（兼容旧数据）
+            if not has_done:
+                done_event = {
+                    "type": "done",
+                    "response": task.final_response or "(未获取到有效回复)",
+                    "thinking_content": task.thinking_content,
+                    "latency_ms": task.latency_ms,
+                    "input_tokens": task.input_tokens,
+                    "output_tokens": task.output_tokens,
+                    "_chunk_index": len(chunks),
+                }
+                yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
 
         return StreamingResponse(replay_from_db(), media_type="text/event-stream")
 
