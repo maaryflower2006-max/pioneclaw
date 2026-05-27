@@ -506,7 +506,7 @@ class TestSkillEvalResultResponse:
             eval_type="full",
             eval_mode="evaluate",
             overall_score=75.0,
-            dimensions=dims,
+            dimensions=[d.model_dump() for d in dims],
             summary="Good skill.",
             model_used="claude-4",
             tokens_used=1500,
