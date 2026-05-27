@@ -607,8 +607,6 @@ class TestSpawnToolTT:
 
     def test_guide_has_knowledge(self):
         tools = SpawnTool._AGENT_TYPE_TOOLS["guide"]
-        assert "knowledge_search" in tools
-        assert "vector_memory_recall" in tools
         assert "memory_retrieve" in tools
         assert "read_file" in tools
         assert "exec" not in tools

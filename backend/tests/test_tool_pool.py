@@ -249,8 +249,6 @@ class TestPlanModeIntegration:
             "ask_user_question",
             "exit_plan_mode",
             "image",
-            "knowledge_search",
-            "vector_memory_recall",
         }
         # pool preset 包含所有回退列表的工具
         assert hardcoded.issubset(plan_allow)

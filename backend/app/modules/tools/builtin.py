@@ -2035,62 +2035,6 @@ class CheckTaskTool(BaseTool):
             return json.dumps({"success": False, "error": str(e)})
 
 
-class VectorMemoryRecallTool(BaseTool):
-    """Track 2: 语义搜索向量记忆库"""
-
-    name = "vector_memory_recall"
-    description = (
-        "在向量记忆库中语义搜索相关记忆（Track 2）。"
-        "支持按内容类型过滤（memory/knowledge/wiki/all）。"
-        "返回最相关的记忆条目及其相似度分数。"
-    )
-    parameters = {
-        "query": ToolParameter(
-            type="string",
-            description="搜索查询文本",
-        ),
-        "source_type": ToolParameter(
-            type="string",
-            description="过滤来源类型：memory（记忆）、knowledge（知识库）、wiki（维基）、all（全部），默认 all",
-            default="all",
-        ),
-        "top_k": ToolParameter(
-            type="integer",
-            description="返回结果数量，默认 5",
-            default=5,
-        ),
-    }
-    required = ["query"]
-
-    async def execute(self, query: str, source_type: str = "all", top_k: int = 5, **kwargs) -> str:
-        try:
-            from app.modules.agent.vector_store import get_vector_store
-
-            store = get_vector_store()
-            st = None if source_type == "all" else source_type
-            results = store.search(query, top_k=top_k, source_type=st, min_score=0.3)
-
-            if not results:
-                return json.dumps({"results": [], "total": 0, "query": query})
-
-            formatted = []
-            for r in results:
-                formatted.append({
-                    "id": r.id,
-                    "content": r.content[:500] if len(r.content) > 500 else r.content,
-                    "source_type": r.source_type,
-                    "score": round(r.score, 3),
-                })
-
-            return json.dumps({
-                "results": formatted,
-                "total": len(formatted),
-                "query": query,
-            }, ensure_ascii=False)
-        except Exception as e:
-            return json.dumps({"error": str(e)})
-
-
 # ============================================================
 # Memory Tools — 使用 fish_memory 模块 (MemoryManage API)
 # ============================================================
@@ -2349,75 +2293,6 @@ class MemoryListTool(BaseTool):
             return json.dumps({"success": False, "error": str(e)})
 
 
-class KnowledgeSearchTool(BaseTool):
-    """搜索知识库"""
-
-    name = "knowledge_search"
-    description = (
-        "在知识库和维基中搜索相关内容。用于查找文档、技术资料、内部知识等。"
-        "支持语义搜索，返回按相关度排序的结果。"
-    )
-    parameters = {
-        "query": ToolParameter(
-            type="string",
-            description="搜索查询文本",
-        ),
-        "source_type": ToolParameter(
-            type="string",
-            description="来源类型：knowledge（知识库）、wiki（维基）、all（全部），默认 all",
-            default="all",
-        ),
-        "top_k": ToolParameter(
-            type="integer",
-            description="返回结果数量，默认 5",
-            default=5,
-        ),
-    }
-    required = ["query"]
-
-    async def execute(self, query: str, source_type: str = "all", top_k: int = 5, **kwargs) -> str:
-        try:
-            from app.modules.agent.vector_store import get_vector_store
-
-            store = get_vector_store()
-            st_types = None if source_type == "all" else [source_type]
-            results = store.search(query, top_k=top_k, source_type=st_types, min_score=0.3)
-
-            if not results:
-                # 尝试 GraphRAG 查询作为补充
-                try:
-                    from app.modules.graph_rag.core import GraphRAGClient
-                    graph = GraphRAGClient()
-                    rag_result = await graph.query(query, mode="hybrid")
-                    if rag_result and rag_result.get("result"):
-                        return json.dumps({
-                            "results": [{"content": rag_result["result"][:1000], "source": "graph_rag"}],
-                            "total": 1,
-                            "query": query,
-                            "mode": "graph_rag",
-                        }, ensure_ascii=False)
-                except Exception:
-                    pass
-                return json.dumps({"results": [], "total": 0, "query": query})
-
-            formatted = []
-            for r in results:
-                formatted.append({
-                    "id": r.id,
-                    "content": r.content[:500] if len(r.content) > 500 else r.content,
-                    "source_type": r.source_type,
-                    "score": round(r.score, 3),
-                })
-
-            return json.dumps({
-                "results": formatted,
-                "total": len(formatted),
-                "query": query,
-            }, ensure_ascii=False)
-        except Exception as e:
-            return json.dumps({"error": str(e)})
-
-
 class SpawnTool(BaseTool):
     """启动子 Agent 处理复杂任务"""
 
@@ -2467,7 +2342,7 @@ class SpawnTool(BaseTool):
             "read_file", "grep", "file_search", "list_dir",
             "web_search", "web_fetch", "current_time", "calculator",
             "ask_user_question", "enter_plan_mode", "exit_plan_mode",
-            "image", "knowledge_search", "vector_memory_recall", "memory_retrieve", "memory_search",
+            "image", "memory_retrieve", "memory_search",
         },
         "verification": {
             "read_file", "grep", "file_search", "list_dir",
@@ -2477,7 +2352,7 @@ class SpawnTool(BaseTool):
         "guide": {
             "read_file", "grep", "file_search", "list_dir",
             "web_search", "web_fetch", "current_time",
-            "knowledge_search", "vector_memory_recall", "memory_retrieve", "memory_search",
+            "memory_retrieve", "memory_search",
         },
     }
 
@@ -3212,13 +3087,11 @@ def register_builtin_tools(registry: Optional["ToolRegistry"] = None):
     registry.register_class(ExitPlanModeTool)
     registry.register_class(RunBackgroundTool)
     registry.register_class(CheckTaskTool)
-    registry.register_class(VectorMemoryRecallTool)
     # Memory tools (fish_memory system)
     registry.register_class(MemorySaveTool)
     registry.register_class(MemoryRetrieveTool)
     registry.register_class(MemorySearchTool)
     registry.register_class(MemoryListTool)
-    registry.register_class(KnowledgeSearchTool)
     registry.register_class(SpawnTool)
     registry.register_class(CronTool)
     registry.register_class(CronCreateTool)

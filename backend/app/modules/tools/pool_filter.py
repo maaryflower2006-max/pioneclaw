@@ -52,9 +52,6 @@ _PLAN_ALLOW = [
     # 计划模式
     "enter_plan_mode",
     "exit_plan_mode",
-    # 知识/记忆（只读）
-    "knowledge_search",
-    "vector_memory_recall",
     # 图片（只读）
     "image",
 ]

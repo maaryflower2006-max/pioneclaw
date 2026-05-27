@@ -51,8 +51,6 @@ def _get_plan_mode_allowed_set() -> set[str]:
         "ask_user_question",
         "exit_plan_mode",
         "image",
-        "knowledge_search",
-        "vector_memory_recall",
     }
 
 

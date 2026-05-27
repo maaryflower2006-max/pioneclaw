@@ -81,7 +81,7 @@ DEFAULT_TEMPLATES: dict[AgentRole, AgentTemplate] = {
         name="Researcher",
         description="搜索和收集信息",
         system_prompt="你是一个研究员。你的职责是搜索和收集与任务相关的信息。",
-        tools_filter=["web_search", "knowledge_search", "document_search"],
+        tools_filter=["web_search", "document_search"],
         priority=100,
     ),
     AgentRole.ANALYST: AgentTemplate(
