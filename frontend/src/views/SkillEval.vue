@@ -265,7 +265,7 @@
                 <div class="bm-cases" v-if="hasPrompts">
                   <div v-for="(ev, idx) in generatedEvals" :key="idx" class="bm-case-card">
                     <div class="bm-case-head">
-                      <span class="bm-case-num">{{ idx + 1 }}</span>
+                      <span class="bm-case-num">{{ (idx as number) + 1 }}</span>
                       <span class="bm-case-label">测试用例</span>
                       <el-button v-if="generatedEvals.length > 1 && !benchmarking" :icon="Close" circle size="small" text @click="removePrompt(idx)" />
                     </div>
@@ -312,7 +312,7 @@
                 <div class="bm-results" v-if="benchmarkResult.runs?.length">
                   <div v-for="(run, idx) in benchmarkResult.runs" :key="idx" class="bm-result-card">
                     <div class="bm-result-head">
-                      <span class="bm-case-num">{{ idx + 1 }}</span>
+                      <span class="bm-case-num">{{ (idx as number) + 1 }}</span>
                       <span class="bm-result-prompt">{{ run.prompt }}</span>
                     </div>
                     <table class="bm-grade-table" v-if="run.with_assertions?.length || run.baseline_assertions?.length">
@@ -471,14 +471,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { api, longApi } from '@/api'
 import { getAccessToken } from '@/stores/user'
 import { marked } from 'marked'
 import {
-  MagicStick, Loading, View, FolderOpened, Document, Folder,
+  MagicStick, Loading, FolderOpened, Document, Folder,
   Memo, Warning, CopyDocument, Check, Download, Close, Plus
 } from '@element-plus/icons-vue'
 

@@ -1,29 +1,31 @@
 """Skill Evaluation API — 技能评估与优化"""
 
+import json
 import logging
-import os
 import re
 from pathlib import Path
-
-import yaml
 from typing import Optional
 
+import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import get_current_active_user
 from app.core import get_db
-from app.models import Skill as DBSkill, User, AIModelConfig
+from app.models import AIModelConfig, User
+from app.models import Skill as DBSkill
+from app.models.models import SkillEvalResult as DBSkillEvalResult
+from app.models.models import SkillScope
 from app.modules.agent.skills import get_skills_loader
 from app.modules.llm.provider import SimpleLLMProvider
-from app.services.skill_eval.redflag_scanner import RedFlagScanner, RedFlagHit
-from app.services.skill_eval.llm_evaluator import LLMEvaluator, LLMEvalResult
-from app.services.skill_eval.skill_optimizer import SkillOptimizer, OptimizeRequest
-from app.services.skill_eval.quick_validate import validate_skill as _quick_validate
 from app.services.skill_eval.benchmark_runner import BenchmarkRunner
+from app.services.skill_eval.llm_evaluator import LLMEvaluator
+from app.services.skill_eval.quick_validate import validate_skill as _quick_validate
+from app.services.skill_eval.redflag_scanner import RedFlagScanner
+from app.services.skill_eval.skill_optimizer import OptimizeRequest, SkillOptimizer
 
 logger = logging.getLogger(__name__)
 
@@ -121,14 +123,12 @@ async def list_eval_skills(
     seen: set[str] = set()
 
     # 1. DB 技能
-    from app.models.models import SkillScope
     conditions = [DBSkill.scope == SkillScope.SYSTEM.value]
     if current_user.organization_id:
         conditions.append(DBSkill.scope == SkillScope.ORG.value)
     conditions.append(
         (DBSkill.scope == SkillScope.USER.value) & (DBSkill.creator_id == current_user.id)
     )
-    from sqlalchemy import or_
     result = await db.execute(
         select(DBSkill).where(or_(*conditions)).order_by(DBSkill.name)
     )
@@ -194,8 +194,6 @@ async def get_skill_tree(
         }
 
     # 再尝试 DB
-    from app.models.models import SkillScope
-    from sqlalchemy import or_
     conditions = [DBSkill.name == skill_name]
     result = await db.execute(select(DBSkill).where(or_(*conditions)))
     db_skill = result.scalar_one_or_none()
@@ -251,8 +249,6 @@ async def get_skill_file(
         }
 
     # DB 技能
-    from app.models.models import SkillScope
-    from sqlalchemy import or_
     conditions = [DBSkill.name == skill_name]
     result = await db.execute(select(DBSkill).where(or_(*conditions)))
     db_skill = result.scalar_one_or_none()
@@ -519,10 +515,6 @@ def _run_structure_checks(skill_dir: Path | None) -> tuple[int, list[StructureCh
         checks.append(_mk_check("有负面路由", False, 0, 10, "缺（near-miss 可能误触发）"))
 
     # ── Check 9: 无硬编码绝对路径（5 分）──
-    abs_path = re.search(
-        r"[A-Za-z]:\\|\\\\[a-zA-Z]|/(?:home|Users|usr|opt|etc|var|tmp|bin|sbin)/",
-        body_text, re.IGNORECASE,
-    )
     # 排除 URL 和 API 路径
     hits: list[str] = []
     for m in re.finditer(
@@ -667,11 +659,12 @@ async def _get_llm_provider(db: AsyncSession, model_config_id: Optional[int] = N
         config = result.scalar_one_or_none()
     else:
         for where in [
-            (AIModelConfig.is_active == True, AIModelConfig.is_default == True),
-            (AIModelConfig.is_active == True,),
-            (AIModelConfig.is_default == True,),
+            (AIModelConfig.is_active, AIModelConfig.is_default),
+            (AIModelConfig.is_active,),
+            (AIModelConfig.is_default,),
         ]:
-            if config: break
+            if config:
+                break
             result = await db.execute(select(AIModelConfig).where(*where).limit(1))
             config = result.scalar_one_or_none()
         if not config:
@@ -680,37 +673,6 @@ async def _get_llm_provider(db: AsyncSession, model_config_id: Optional[int] = N
     if config:
         return SimpleLLMProvider(config=config)
     return None
-
-
-async def _get_default_llm_provider(db: AsyncSession) -> SimpleLLMProvider:
-    """Get default model config and construct SimpleLLMProvider."""
-    config = None
-    # Try is_default + is_active
-    result = await db.execute(
-        select(AIModelConfig).where(AIModelConfig.is_default == True, AIModelConfig.is_active == True)
-    )
-    config = result.scalar_one_or_none()
-    # Fallback: any active
-    if not config:
-        result = await db.execute(
-            select(AIModelConfig).where(AIModelConfig.is_active == True).limit(1)
-        )
-        config = result.scalar_one_or_none()
-    # Fallback: any default
-    if not config:
-        result = await db.execute(
-            select(AIModelConfig).where(AIModelConfig.is_default == True).limit(1)
-        )
-        config = result.scalar_one_or_none()
-    # Fallback: any config at all
-    if not config:
-        result = await db.execute(select(AIModelConfig).limit(1))
-        config = result.scalar_one_or_none()
-    if not config:
-        raise HTTPException(status_code=503, detail="没有可用的 AI 模型配置。请在 AI 管理页面添加模型配置")
-    if not config.api_key:
-        raise HTTPException(status_code=503, detail=f"配置「{config.display_name}」未设置 API Key，请在 AI 管理页面设置")
-    return SimpleLLMProvider(config=config)
 
 
 # ── Additional schemas ─────────────────────────────────────────────────────
@@ -766,13 +728,6 @@ class BenchmarkOut(BaseModel):
     avg_rubric: RubricScoreOut = RubricScoreOut()
 
 
-# ── New endpoints ──────────────────────────────────────────────────────────
-
-@router.post("/skills/{skill_name}/test-ping")
-async def test_ping(skill_name: str):
-    return {"ping": "pong", "skill": skill_name, "_diag": "test endpoint works"}
-
-
 @router.post("/skills/{skill_name}/evaluate-llm")
 async def evaluate_llm(
     skill_name: str,
@@ -781,6 +736,12 @@ async def evaluate_llm(
     current_user: User = Depends(get_current_active_user),
 ):
     """LLM 深度评估：5 维主观评分（异步调用，耗时较长）"""
+    MAX_CONTENT_LEN = 50 * 1024  # 50KB
+    if len(request.content) > MAX_CONTENT_LEN:
+        raise HTTPException(
+            status_code=413,
+            detail=f"SKILL.md 内容过长（{len(request.content)} 字节），上限 {MAX_CONTENT_LEN} 字节，请精简后重试",
+        )
     provider = await _get_llm_provider(db)
     if not provider:
         raise HTTPException(status_code=503, detail="LLM 服务不可用")
@@ -848,9 +809,8 @@ async def optimize_skill(
     current_user: User = Depends(get_current_active_user),
 ):
     """根据评估建议优化 SKILL.md"""
-    try:
-        provider = await _get_llm_provider(db)
-    except HTTPException:
+    provider = await _get_llm_provider(db)
+    if not provider:
         raise HTTPException(status_code=503, detail="LLM 服务不可用，无法优化")
 
     optimizer = SkillOptimizer(provider)
@@ -1009,9 +969,9 @@ async def benchmark_skill_stream(
 async def get_skill_report(
     skill_name: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
-    """生成评估报告 HTML（公开访问）"""
-    from fastapi.responses import HTMLResponse
+    """生成评估报告 HTML"""
     import tempfile
 
     content = ""
@@ -1022,8 +982,6 @@ async def get_skill_report(
             content = sk.path.read_text(encoding="utf-8")
 
     # Run a quick static evaluation to get data
-    from app.services.skill_eval.redflag_scanner import RedFlagScanner
-    from app.services.skill_eval.quick_validate import validate_skill as qv
     scanner = RedFlagScanner()
     redflag = scanner.scan_detail(content)
 
@@ -1042,7 +1000,7 @@ async def get_skill_report(
     with tempfile.TemporaryDirectory() as td:
         sf = Path(td) / "SKILL.md"
         sf.write_text(content, encoding="utf-8")
-        _, _, checks = qv(Path(td))
+        _, _, checks = _quick_validate(Path(td))
 
     safety_score = max(0, 100 - failed * 15)
     struct_passed = sum(1 for c in checks if c["passed"])
@@ -1067,22 +1025,50 @@ th{{color:var(--muted);font-size:.75em;text-transform:uppercase}}
 .score{{font-size:2.5em;font-weight:800;color:var(--primary)}}
 </style></head><body>
 <h1>Skill 评估报告 — {_html.escape(skill_name)}</h1>
-<div class="card" style="text-align:center"><div style="font-size:3em;font-weight:800;color:var(--primary)">{overall}</div><div style="color:var(--muted)">综合评分 /100</div></div>
+<div class="card" style="text-align:center">
+<div style="font-size:3em;font-weight:800;color:var(--primary)">{overall}</div>
+<div style="color:var(--muted)">综合评分 /100</div></div>
 <div class="card"><div class="score">{struct_score}</div><div style="color:var(--muted)">结构评分 /100</div></div>
 <div class="card"><div class="score">{safety_score}</div><div style="color:var(--muted)">安全评分 /100（命中 {failed}/14 条红线）</div></div>
 <h2>结构检查</h2><table><tr><th>检查项</th><th>状态</th><th>得分</th><th>详情</th></tr>"""]
 
     for c in checks:
         passed = c["passed"]
-        parts.append(f'<tr><td>{_html.escape(str(c["check"]))}</td><td><span class="badge {"badge-pass" if passed else "badge-fail"}">{"✓ 通过" if passed else "✗ 失败"}</span></td><td>{c["score"]}/{c["max_score"]}</td><td style="font-size:.8em;color:var(--muted)">{_html.escape(str(c["detail"]))}</td></tr>')
+        badge_cls = "badge-pass" if passed else "badge-fail"
+        badge_text = "✓ 通过" if passed else "✗ 失败"
+        parts.append(
+            f'<tr>'
+            f'<td>{_html.escape(str(c["check"]))}</td>'
+            f'<td><span class="badge {badge_cls}">{badge_text}</span></td>'
+            f'<td>{c["score"]}/{c["max_score"]}</td>'
+            f'<td style="font-size:.8em;color:var(--muted)">{_html.escape(str(c["detail"]))}</td>'
+            f'</tr>'
+        )
 
-    parts.append('</table><h2>安全红线扫描</h2><table><tr><th>规则</th><th>严重度</th><th>描述</th><th>状态</th></tr>')
+    parts.append(
+        '</table><h2>安全红线扫描</h2>'
+        '<table><tr><th>规则</th><th>严重度</th><th>描述</th><th>状态</th></tr>'
+    )
     for r in redflag_hits:
         sev = r["severity"]
         sev_color = "var(--red)" if sev == "CRITICAL" else "var(--amber)"
-        parts.append(f'<tr><td style="font-family:monospace;font-size:.8em">{_html.escape(str(r["rule_id"]))}</td><td style="color:{sev_color};font-weight:600;font-size:.75em">{_html.escape(str(sev))}</td><td style="font-size:.85em">{_html.escape(str(r["description"]))}</td><td><span class="badge {"badge-pass" if r["passed"] else "badge-fail"}">{"✓" if r["passed"] else "✕"}</span></td></tr>')
+        badge_cls2 = "badge-pass" if r["passed"] else "badge-fail"
+        badge_icon = "✓" if r["passed"] else "✕"
+        parts.append(
+            f'<tr>'
+            f'<td style="font-family:monospace;font-size:.8em">{_html.escape(str(r["rule_id"]))}</td>'
+            f'<td style="color:{sev_color};font-weight:600;font-size:.75em">{_html.escape(str(sev))}</td>'
+            f'<td style="font-size:.85em">{_html.escape(str(r["description"]))}</td>'
+            f'<td><span class="badge {badge_cls2}">{badge_icon}</span></td>'
+            f'</tr>'
+        )
 
-    parts.append('</table><div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);font-size:.75em;color:var(--muted);text-align:center">Generated by PioneClaw Skill Evaluator</div></body></html>')
+    parts.append(
+        '</table>'
+        '<div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);'
+        'font-size:.75em;color:var(--muted);text-align:center">'
+        'Generated by PioneClaw Skill Evaluator</div></body></html>'
+    )
 
     return HTMLResponse(content="".join(parts))
 
@@ -1108,19 +1094,17 @@ async def get_skill_history(
     current_user: User = Depends(get_current_active_user),
 ):
     """获取技能评估历史记录（分页）"""
-    from app.models.models import SkillEvalResult as DBSkillEvalResult
-    from sqlalchemy import func, desc
-
+    where_clause = (DBSkillEvalResult.skill_name == skill_name) & (
+        DBSkillEvalResult.creator_id == current_user.id
+    )
     total_q = await db.execute(
-        select(func.count()).select_from(DBSkillEvalResult).where(
-            DBSkillEvalResult.skill_name == skill_name
-        )
+        select(func.count()).select_from(DBSkillEvalResult).where(where_clause)
     )
     total = total_q.scalar() or 0
 
     items_q = await db.execute(
         select(DBSkillEvalResult)
-        .where(DBSkillEvalResult.skill_name == skill_name)
+        .where(where_clause)
         .order_by(desc(DBSkillEvalResult.created_at))
         .offset((page - 1) * page_size)
         .limit(page_size)
@@ -1199,7 +1183,6 @@ async def generate_test_prompts(
 
 def _extract_prompts_from_skill(name: str, content: str) -> list[str]:
     """Smart fallback: build realistic user prompts from skill description and content."""
-    import re
     prompts = []
     lines = content.split("\n")
 
@@ -1207,8 +1190,10 @@ def _extract_prompts_from_skill(name: str, content: str) -> list[str]:
     in_fm, description = False, ""
     for i, line in enumerate(lines):
         if line.strip() == "---":
-            if not in_fm: in_fm = True
-            else: break
+            if not in_fm:
+                in_fm = True
+            else:
+                break
         elif in_fm and line.startswith("description:"):
             description = line.split(":", 1)[1].strip().strip('"').strip("'")
 
@@ -1217,10 +1202,7 @@ def _extract_prompts_from_skill(name: str, content: str) -> list[str]:
     if not core_desc:
         # Try first heading after frontmatter
         body_lines = lines[i+1:] if i+1 < len(lines) else []
-        core_desc = " ".join(l for l in body_lines[:3] if l.strip() and not l.startswith("#"))
-
-    # Extract verbs/actions from description to understand what the skill DOES
-    actions = re.findall(r'(?:支持|可以|通过|操控|访问|打开|搜索|生成|处理|转换|提取|创建|制作|管理|分析|检查)[一-龥a-zA-Z0-9/，,、\s]{3,30}', description + content[:300])
+        core_desc = " ".join(ln for ln in body_lines[:3] if ln.strip() and not ln.startswith("#"))
 
     # Build natural-language prompts based on the skill's actual capabilities
     if "搜索" in description and "B站" in description or "bilibili" in description.lower():
@@ -1284,8 +1266,6 @@ async def _llm_generate_prompts(provider, name: str, content: str) -> list[dict]
         {"role": "user", "content": content[:3000]},
     ]
 
-    import json
-
     for attempt in range(2):
         if attempt > 0:
             logger.info("Retrying LLM prompt generation (attempt %d/2)...", attempt + 1)
@@ -1320,8 +1300,7 @@ async def _llm_generate_prompts(provider, name: str, content: str) -> list[dict]
             pass
 
         # Find JSON array via regex (handle reasoning text before/after)
-        import re as _re
-        matches = list(_re.finditer(r'\[\s*\{', text))
+        matches = list(re.finditer(r'\[\s*\{', text))
         if matches:
             for m in reversed(matches):
                 try:
@@ -1332,7 +1311,7 @@ async def _llm_generate_prompts(provider, name: str, content: str) -> list[dict]
                     continue
 
         # Find individual JSON objects
-        objs = _re.findall(r'\{[^{}]*"(?:prompt|expected|name|id)"[^{}]*\}', text)
+        objs = re.findall(r'\{[^{}]*"(?:prompt|expected|name|id)"[^{}]*\}', text)
         if objs:
             results = []
             for obj_str in objs:

@@ -128,7 +128,11 @@ class SkillOptimizer:
                     benchmark_section += (
                         f"  {i+1}. \"{prompt}\" → With: {w_p}/{w_t}, Baseline: {b_p}/{b_t}\n"
                     )
-            benchmark_section += "\n如果断言区分度不足（with/baseline 差距小），说明 skill 的关键技术指示词不够突出，需要在 SKILL.md 中强化这些关键词的位置和可见性。\n"
+            benchmark_section += (
+    "\n如果断言区分度不足（with/baseline 差距小），"
+    "说明 skill 的关键技术指示词不够突出，"
+    "需要在 SKILL.md 中强化这些关键词的位置和可见性。\n"
+)
 
         return f"""\
 ## 当前 SKILL.md

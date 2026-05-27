@@ -11,10 +11,13 @@ Design: dark glass-morphism theme matching PioneClaw UI.
 Reference: skill-creator eval-viewer/generate_review.py patterns.
 """
 from datetime import datetime, timezone
-from app.schemas.skill_eval import (
-    GradingResult, BenchmarkResult, ComparisonResult, OptimizationResult,
-)
 
+from app.schemas.skill_eval import (
+    BenchmarkResult,
+    ComparisonResult,
+    GradingResult,
+    OptimizationResult,
+)
 
 # ---------------------------------------------------------------------------
 # Shared CSS
@@ -127,8 +130,10 @@ pre {
 # ---------------------------------------------------------------------------
 
 def _score_color(score: float) -> str:
-    if score >= 80: return "var(--green)"
-    if score >= 60: return "var(--amber)"
+    if score >= 80:
+        return "var(--green)"
+    if score >= 60:
+        return "var(--amber)"
     return "var(--red)"
 
 
@@ -182,7 +187,11 @@ def generate_evaluation_report(result: GradingResult, skill_name: str = "") -> s
     <div style="font-size:3em;font-weight:800;color:{color};">{score:.1f}</div>
     <div style="color:var(--text-muted);">综合评分 / 100</div>
     {f'<div style="margin-top:8px;font-size:0.9em;">{_escape(result.summary)}</div>' if result.summary else ''}
-    {f'<div style="margin-top:4px;font-size:0.75em;color:var(--text-muted);">模型: {_escape(result.model_used) or "—"} · Tokens: {result.tokens_used}</div>' if result.model_used or result.tokens_used else ''}
+    {(
+        f'<div style="margin-top:4px;font-size:0.75em;color:var(--text-muted);">'
+        f'模型: {_escape(result.model_used) or "—"} · Tokens: {result.tokens_used}</div>'
+        if result.model_used or result.tokens_used else ''
+    )}
 </div>"""]
 
     # 8 Dimensions
@@ -197,8 +206,14 @@ def generate_evaluation_report(result: GradingResult, skill_name: str = "") -> s
         parts.append('<h2>结构检查</h2><table><tr><th>检查项</th><th>状态</th><th>得分</th><th>详情</th></tr>')
         for c in result.static_checks:
             passed = c.get("passed", False)
-            status = f'<span style="color:var(--green)">✓ 通过</span>' if passed else f'<span style="color:var(--red)">✗ 失败</span>'
-            parts.append(f'<tr><td>{_escape(str(c.get("check","")))}</td><td>{status}</td><td>{c.get("score",0)}/{c.get("max_score",0)}</td><td style="font-size:0.82em;color:var(--text-muted);">{_escape(str(c.get("detail","")))}</td></tr>')
+            status = '<span style="color:var(--green)">✓ 通过</span>' if passed else '<span style="color:var(--red)">✗ 失败</span>'
+            parts.append(
+                f'<tr><td>{_escape(str(c.get("check","")))}</td>'
+                f'<td>{status}</td>'
+                f'<td>{c.get("score",0)}/{c.get("max_score",0)}</td>'
+                f'<td style="font-size:0.82em;color:var(--text-muted);">'
+                f'{_escape(str(c.get("detail","")))}</td></tr>'
+            )
         parts.append('</table>')
 
     # Redflag hits
@@ -207,7 +222,15 @@ def generate_evaluation_report(result: GradingResult, skill_name: str = "") -> s
         for h in result.redflag_hits:
             sev = h.get("severity", "HIGH")
             sev_class = "badge-critical" if sev == "CRITICAL" else "badge-high"
-            parts.append(f'<tr><td style="font-family:monospace;">{_escape(str(h.get("rule_id","")))}</td><td><span class="badge {sev_class}">{_escape(sev)}</span></td><td>{_escape(str(h.get("description","")))}</td><td style="font-size:0.8em;color:var(--text-muted);">行 {h.get("line",0)}: {_escape(str(h.get("snippet","")))[:80]}</td></tr>')
+            parts.append(
+                f'<tr>'
+                f'<td style="font-family:monospace;">{_escape(str(h.get("rule_id","")))}</td>'
+                f'<td><span class="badge {sev_class}">{_escape(sev)}</span></td>'
+                f'<td>{_escape(str(h.get("description","")))}</td>'
+                f'<td style="font-size:0.8em;color:var(--text-muted);">'
+                f'行 {h.get("line",0)}: {_escape(str(h.get("snippet","")))[:80]}</td>'
+                f'</tr>'
+            )
         parts.append('</table>')
 
     # Suggestions
@@ -256,9 +279,15 @@ def generate_benchmark_report(benchmark: BenchmarkResult) -> str:
     parts = []
 
     # Metadata
+    model_name = _escape(str(meta.get('executor_model', meta.get('model','—')))
+                         if isinstance(meta, dict) else '—')
+    version = _escape(str(meta.get('version','—')) if isinstance(meta, dict) else '—')
+    timestamp = _escape(str(meta.get('timestamp','—')) if isinstance(meta, dict) else '—')
+    evals = _escape(str(meta.get('evals_run','—')) if isinstance(meta, dict) else '—')
+    runs = _escape(str(meta.get('runs_per_configuration','—')) if isinstance(meta, dict) else '—')
     parts.append(f"""<div class="card" style="font-size:0.85em;color:var(--text-muted);">
-    <div>模型: {_escape(str(meta.get('executor_model', meta.get('model','—'))) if isinstance(meta, dict) else '—')} · 版本: {_escape(str(meta.get('version','—')) if isinstance(meta, dict) else '—')} · 时间: {_escape(str(meta.get('timestamp','—')) if isinstance(meta, dict) else '—')}</div>
-    <div>Evals: {_escape(str(meta.get('evals_run','—')) if isinstance(meta, dict) else '—')} · 每配置 {_escape(str(meta.get('runs_per_configuration','—')) if isinstance(meta, dict) else '—')} 轮</div>
+    <div>模型: {model_name} · 版本: {version} · 时间: {timestamp}</div>
+    <div>Evals: {evals} · 每配置 {runs} 轮</div>
 </div>""")
 
     # Config comparison
@@ -276,12 +305,23 @@ def generate_benchmark_report(benchmark: BenchmarkResult) -> str:
             pr_mean = pr.get("mean", 0) if isinstance(pr, dict) else 0
             ts_mean = ts.get("mean", 0) if isinstance(ts, dict) else 0
             tk_mean = tk.get("mean", 0) if isinstance(tk, dict) else 0
-            parts.append(f'<tr><td style="font-weight:600;">{_escape(config_name)}</td><td>{pr_mean*100:.0f}%</td><td>{ts_mean:.1f}</td><td>{tk_mean:.0f}</td></tr>')
+            parts.append(
+                f'<tr><td style="font-weight:600;">{_escape(config_name)}</td>'
+                f'<td>{pr_mean*100:.0f}%</td><td>{ts_mean:.1f}</td>'
+                f'<td>{tk_mean:.0f}</td></tr>'
+            )
 
         # Delta row
         delta = run_summary.get("delta", {})
         if isinstance(delta, dict):
-            parts.append(f'<tr style="border-top:2px solid var(--primary);"><td style="font-weight:700;color:var(--primary);">Delta</td><td style="color:var(--primary);">{_escape(str(delta.get("pass_rate","—")))}</td><td>{_escape(str(delta.get("time_seconds","—")))}</td><td>{_escape(str(delta.get("tokens","—")))}</td></tr>')
+            parts.append(
+                f'<tr style="border-top:2px solid var(--primary);">'
+                f'<td style="font-weight:700;color:var(--primary);">Delta</td>'
+                f'<td style="color:var(--primary);">'
+                f'{_escape(str(delta.get("pass_rate","—")))}</td>'
+                f'<td>{_escape(str(delta.get("time_seconds","—")))}</td>'
+                f'<td>{_escape(str(delta.get("tokens","—")))}</td></tr>'
+            )
         parts.append('</table>')
 
     # Runs detail
@@ -339,7 +379,12 @@ def generate_comparison_report(comparison: ComparisonResult, skill_name: str = "
                 structure_score = getattr(rs, "structure_score", 0)
                 overall = getattr(rs, "overall_score", 0)
 
-            parts.append(f'<div style="font-size:2em;font-weight:800;color:{_score_color(overall*10)};">{overall:.1f}<span style="font-size:0.5em;color:var(--text-muted);">/10</span></div>')
+            parts.append(
+                f'<div style="font-size:2em;font-weight:800;color:{_score_color(overall*10)};">'
+                f'{overall:.1f}'
+                f'<span style="font-size:0.5em;color:var(--text-muted);">/10</span>'
+                f'</div>'
+            )
             parts.append(f'<div style="font-size:0.85em;color:var(--text-muted);">Content: {content_score:.1f} · Structure: {structure_score:.1f}</div>')
             parts.append('</div>')
         parts.append('</div>')

@@ -6,9 +6,9 @@ Three prompt builders extracted from skill-creator agent markdown files:
 - build_analyzer_prompt: post-hoc optimization analysis
 """
 
-from .grader_prompt import build_grader_prompt
-from .comparator_prompt import build_comparator_prompt
 from .analyzer_prompt import build_analyzer_prompt
+from .comparator_prompt import build_comparator_prompt
+from .grader_prompt import build_grader_prompt
 
 __all__ = [
     "build_grader_prompt",

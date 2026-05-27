@@ -321,7 +321,7 @@ class BenchmarkRunner:
         for idx, tp in enumerate(test_prompts):
             prompt = tp.get("prompt", "")
             # with_skill
-            with_sys = f"<skill-instructions>\n{skill_body}\n</skill-instructions>"
+            with_sys = f"<skill-instructions>\n{skill_body[:1500]}\n</skill-instructions>"
             spawn_coroutines.append(self._spawn_subagent(
                 message=f"Task: {prompt}",
                 system_prompt=with_sys,

@@ -87,7 +87,8 @@ _EVAL_SYSTEM_PROMPT = """\
 - low：锦上添花（如格式美化、注释补充）
 
 每条建议必须附加：
-- category：问题所属类别，必须从以下选择：instructions（指令问题）、tools（脚本/工具）、examples（示例缺失）、error_handling（错误处理）、structure（结构组织）、references（引用/参考）
+- category：问题所属类别，必须从以下选择：instructions（指令问题）、tools（脚本/工具）、
+      examples（示例缺失）、error_handling（错误处理）、structure（结构组织）、references（引用/参考）
 - impact（≤30字）：如果不修复此问题，会导致什么具体后果。禁止写"影响用户体验"等空话，必须写具体后果如"硬编码路径导致其他用户无法执行脚本"
 
 重要原则：禁止猜测 SKILL.md 中不存在的内容。你评分和提建议必须基于 SKILL.md 中实际写的内容，没提到的不要评。
@@ -100,8 +101,10 @@ _EVAL_SYSTEM_PROMPT = """\
     {"key": "clarity", "score": 85, "comment": "步骤可执行但脚本缺少参数默认值说明"}
   ],
   "suggestions": [
-    {"title": "修复硬编码路径", "detail": "C:\\\\Users\\\\Yue\\\\ 应改为可配置或环境变量", "severity": "high", "category": "tools", "impact": "其他用户执行时会因路径不存在而失败"},
-    {"title": "添加预检机制", "detail": "在 Prerequisite 中验证 openpyxl 和 Chrome 扩展是否存在", "severity": "high", "category": "instructions", "impact": "缺少依赖时执行会报错且用户不知如何排查"}
+    {"title": "修复硬编码路径", "detail": "C:\\\\Users\\\\Yue\\\\ 应改为可配置或环境变量",
+     "severity": "high", "category": "tools", "impact": "其他用户执行时会因路径不存在而失败"},
+    {"title": "添加预检机制", "detail": "在 Prerequisite 中验证 openpyxl 和 Chrome 扩展是否存在",
+     "severity": "high", "category": "instructions", "impact": "缺少依赖时执行会报错且用户不知如何排查"}
   ],
   "summary": "结构清晰但存在硬编码和预检缺失"
 }

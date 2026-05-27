@@ -5,9 +5,9 @@ Covers darwin-skill 8-dimension rubric, skill-creator grading/comparison/benchma
 optimization results, and database response models.
 """
 from datetime import datetime
-from typing import Optional, Literal
-from pydantic import BaseModel, Field, field_validator, ConfigDict
+from typing import Literal, Optional
 
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # ==================== EvalDimension (darwin-skill 8-dimension rubric) ====================
 
