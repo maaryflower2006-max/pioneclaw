@@ -8,7 +8,6 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from app.modules.llm.provider import SimpleLLMProvider
 
@@ -158,14 +157,6 @@ class LLMEvaluator:
                 raise RuntimeError(f"LLM API error: {chunk['error']}")
             parts.append(chunk.get("content", ""))
         raw_text = "".join(parts).strip()
-        # Debug: write raw response to file for troubleshooting
-        try:
-            # Debug: write to project-relative path
-            debug_path = Path(__file__).resolve().parents[3] / "llm_eval_raw.txt"
-            with open(debug_path, "w", encoding="utf-8") as f:
-                f.write(raw_text)
-        except Exception:
-            pass
         logger.info(f"LLM raw response length: {len(raw_text)}, prefix: {raw_text[:200]!r}, suffix: {raw_text[-200:]!r}")
         return raw_text
 

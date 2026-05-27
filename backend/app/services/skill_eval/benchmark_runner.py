@@ -12,6 +12,7 @@ Public API:
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -102,7 +103,7 @@ class BenchmarkRunner:
         self.llm = llm
         self.subagent_manager = subagent_manager   # kept for compat
         self.poll_timeout_seconds = poll_timeout_seconds
-        self._base_url = "http://localhost:8002/api"
+        self._base_url = os.getenv("SUBAGENT_API_URL", "http://localhost:8002/api")
         self._auth_headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else {}
 
     # ------------------------------------------------------------------
