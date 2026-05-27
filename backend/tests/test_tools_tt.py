@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.modules.agent.subagent import BuiltinAgentType
-from app.modules.tools.builtin import AskUserQuestionTool, SpawnTool
+from app.modules.tools.builtin import AskUserQuestionTool, EditFileTool, SpawnTool
 from app.modules.tools.config import ConfigTool
 from app.modules.tools.plan_mode import EnterPlanModeTool, ExitPlanModeTool
 from app.modules.tools.send_message import SendMessageTool
@@ -617,3 +617,102 @@ class TestSpawnToolTT:
         for agent_type in SpawnTool._AGENT_TYPE_TOOLS:
             tools = SpawnTool._AGENT_TYPE_TOOLS[agent_type]
             assert tools is None or isinstance(tools, (set, frozenset))
+
+
+# ============================================================
+# EditFileTool 测试
+# ============================================================
+
+
+class TestEditFileTool:
+    """测试 EditFileTool — 精确文本替换"""
+
+    @pytest.fixture
+    def tool(self):
+        return EditFileTool()
+
+    def test_deprecated_params_not_in_schema(self, tool):
+        """废弃参数 start_line/end_line/insert 不应出现在 parameters schema 中"""
+        assert "start_line" not in tool.parameters
+        assert "end_line" not in tool.parameters
+        assert "insert" not in tool.parameters
+
+    def test_required_params(self, tool):
+        """path 是必填参数"""
+        assert "path" in tool.required
+
+    @pytest.mark.asyncio
+    async def test_deprecated_params_ignored(self, tool, tmp_path):
+        """传入废弃参数 start_line/end_line/insert 时被正确忽略，正常执行替换"""
+        test_file = tmp_path / "test_deprecated.txt"
+        test_file.write_text("hello world\n", encoding="utf-8")
+
+        with patch("app.core.sandbox.validate_path_for_write", return_value=test_file):
+            result = await tool.execute(
+                path=str(test_file),
+                old_text="hello world",
+                new_text="hello pioneers",
+                start_line=1,  # 废弃参数
+                end_line=1,    # 废弃参数
+                insert=False,  # 废弃参数
+            )
+            assert "已编辑" in result
+
+        assert test_file.read_text(encoding="utf-8") == "hello pioneers\n"
+
+    @pytest.mark.asyncio
+    async def test_normal_replace(self, tool, tmp_path):
+        """正常文本替换"""
+        test_file = tmp_path / "test_replace.txt"
+        test_file.write_text("old content\n", encoding="utf-8")
+
+        with patch("app.core.sandbox.validate_path_for_write", return_value=test_file):
+            result = await tool.execute(
+                path=str(test_file),
+                old_text="old content",
+                new_text="new content",
+            )
+            assert "已编辑" in result
+
+        assert test_file.read_text(encoding="utf-8") == "new content\n"
+
+    @pytest.mark.asyncio
+    async def test_missing_old_text(self, tool, tmp_path):
+        """未提供 old_text 返回错误"""
+        test_file = tmp_path / "test_missing.txt"
+        test_file.write_text("some content\n", encoding="utf-8")
+
+        with patch("app.core.sandbox.validate_path_for_write", return_value=test_file):
+            result = await tool.execute(path=str(test_file), old_text="")
+            assert "错误" in result
+            assert "old_text" in result
+
+    @pytest.mark.asyncio
+    async def test_old_text_not_found(self, tool, tmp_path):
+        """old_text 不存在于文件中"""
+        test_file = tmp_path / "test_notfound.txt"
+        test_file.write_text("actual content\n", encoding="utf-8")
+
+        with patch("app.core.sandbox.validate_path_for_write", return_value=test_file):
+            result = await tool.execute(
+                path=str(test_file),
+                old_text="nonexistent",
+                new_text="replacement",
+            )
+            assert "错误" in result
+            assert "未找到" in result
+
+    @pytest.mark.asyncio
+    async def test_duplicate_old_text(self, tool, tmp_path):
+        """old_text 出现多次，返回警告"""
+        test_file = tmp_path / "test_dup.txt"
+        test_file.write_text("repeat\nrepeat\n", encoding="utf-8")
+
+        with patch("app.core.sandbox.validate_path_for_write", return_value=test_file):
+            result = await tool.execute(
+                path=str(test_file),
+                old_text="repeat",
+                new_text="unique",
+            )
+            assert "警告" in result
+            assert "出现 2 次" in result

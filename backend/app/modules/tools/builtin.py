@@ -787,6 +787,7 @@ class EditFileTool(BaseTool):
     description = (
         "编辑文件内容。提供 old_text 和 new_text，将文件中唯一的 old_text 精确替换为 new_text。"
         "old_text 必须在文件中唯一存在。编辑前建议先用 read_file 确认内容。"
+        "注意：start_line/end_line/insert 参数已废弃，将被忽略，请使用 old_text + new_text 模式。"
     )
     parameters = {
         "path": ToolParameter(
@@ -802,21 +803,6 @@ class EditFileTool(BaseTool):
             type="string",
             description="替换后的新文本",
             default="",
-        ),
-        "start_line": ToolParameter(
-            type="integer",
-            description="起始行号（1-based，行编辑模式）",
-            default=0,
-        ),
-        "end_line": ToolParameter(
-            type="integer",
-            description="结束行号（默认等于 start_line）",
-            default=0,
-        ),
-        "insert": ToolParameter(
-            type="boolean",
-            description="在 start_line 前插入而非替换（默认 false）",
-            default=False,
         ),
     }
     required = ["path"]
