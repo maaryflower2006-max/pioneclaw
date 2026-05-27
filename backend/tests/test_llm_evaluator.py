@@ -10,6 +10,7 @@ import pytest
 
 from app.modules.llm.provider import SimpleLLMProvider
 from app.schemas.skill_eval import GradingResult
+from app.services.skill_eval.llm_evaluator import LLMEvaluator
 
 # ---------------------------------------------------------------------------
 # Sample data
@@ -261,7 +262,6 @@ class TestLLMMode:
     @pytest.mark.asyncio
     async def test_build_messages_format(self):
         """Verify messages list format is correct for SimpleLLMProvider — single user message."""
-        from app.services.skill_eval.llm_evaluator import LLMEvaluator
         from app.services.skill_eval.prompts.grader_prompt import build_grader_prompt
 
         captured_messages = []

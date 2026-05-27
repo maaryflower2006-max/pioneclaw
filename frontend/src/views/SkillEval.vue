@@ -478,7 +478,7 @@ import { api, longApi } from '@/api'
 import { getAccessToken } from '@/stores/user'
 import { marked } from 'marked'
 import {
-  MagicStick, Loading, FolderOpened, Document, Folder,
+  InfoFilled, MagicStick, Loading, FolderOpened, Document, Folder,
   Memo, Warning, CopyDocument, Check, Download, Close, Plus
 } from '@element-plus/icons-vue'
 
