@@ -23,7 +23,6 @@ from app.modules.agent.skills import get_skills_loader
 from app.modules.llm.provider import SimpleLLMProvider
 from app.services.skill_eval.benchmark_runner import BenchmarkRunner
 from app.services.skill_eval.llm_evaluator import LLMEvaluator
-from app.services.skill_eval.quick_validate import validate_skill as _quick_validate
 from app.services.skill_eval.redflag_scanner import RedFlagScanner
 from app.services.skill_eval.skill_optimizer import OptimizeRequest, SkillOptimizer
 
@@ -389,7 +388,7 @@ def _mk_check(check: str, passed: bool, score: int, max_score: int, detail: str)
 
 
 def _run_structure_checks(skill_dir: Path | None) -> tuple[int, list[StructureCheckOut]]:
-    """10 项静态检查（来自 static-checks.md），满分 100。"""
+    """13 项静态检查，满分 160。"""
     checks: list[StructureCheckOut] = []
 
     if skill_dir is None:
@@ -542,24 +541,35 @@ def _run_structure_checks(skill_dir: Path | None) -> tuple[int, list[StructureCh
     else:
         checks.append(_mk_check("无时间敏感信息", False, 0, 5, time_sensitive.group()[:50]))
 
-    # ── Check 11-16: frontmatter 规范验证（来自 skill-creator）──
-    if skill_dir is not None:
-        try:
-            qv_passed, qv_msg, qv_checks = _quick_validate(skill_dir)
-            for qc in qv_checks:
-                checks.append(StructureCheckOut(
-                    check=qc["check"],
-                    passed=qc["passed"],
-                    score=qc["score"],
-                    max_score=qc["max_score"],
-                    detail=qc["detail"],
-                ))
-        except Exception as e:
-            checks.append(StructureCheckOut(
-                check="frontmatter 规范验证",
-                passed=False, score=0, max_score=5,
-                detail=f"验证异常: {e}",
-            ))
+    # ── Check 11: YAML frontmatter 格式（10 分）──
+    # Already parsed by _parse_skill_md above; if we got here, frontmatter is valid
+    checks.append(_mk_check("YAML frontmatter", True, 10, 10, "格式正确"))
+
+    # ── Check 12: frontmatter 字段合规（5 分）──
+    ALLOWED_FM_KEYS = {
+        "name", "title", "description", "license", "tags", "always",
+        "compatibility", "install", "metadata", "dependencies",
+    }
+    unexpected_keys = set(fm.keys()) - ALLOWED_FM_KEYS
+    if unexpected_keys:
+        checks.append(_mk_check(
+            "frontmatter 字段合规", False, 0, 5,
+            f"意外字段: {', '.join(sorted(unexpected_keys))}",
+        ))
+    else:
+        checks.append(_mk_check("frontmatter 字段合规", True, 5, 5, "通过"))
+
+    # ── Check 13: compatibility 类型（5 分）──
+    compatibility = fm.get("compatibility", "")
+    if compatibility:
+        if not isinstance(compatibility, str):
+            checks.append(_mk_check("compatibility 类型", False, 0, 5, "必须是字符串"))
+        elif len(compatibility) > 500:
+            checks.append(_mk_check("compatibility 类型", False, 0, 5, f"超长({len(compatibility)}字符)"))
+        else:
+            checks.append(_mk_check("compatibility 类型", True, 5, 5, "通过"))
+    else:
+        checks.append(_mk_check("compatibility 类型", True, 5, 5, "可选字段，未设置"))
 
     # 总分归一化到 0-100
     total_score = sum(c.score for c in checks)
@@ -997,14 +1007,20 @@ async def get_skill_report(
             failed += 1
 
     # Structure checks
+    struct_score = 0
+    structure_checks: list[dict] = []
     with tempfile.TemporaryDirectory() as td:
         sf = Path(td) / "SKILL.md"
         sf.write_text(content, encoding="utf-8")
-        _, _, checks = _quick_validate(Path(td))
+        struct_score, structure_objs = _run_structure_checks(Path(td))
+        for sc in structure_objs:
+            structure_checks.append({
+                "check": sc.check, "passed": sc.passed,
+                "score": sc.score, "max_score": sc.max_score,
+                "detail": sc.detail,
+            })
 
     safety_score = max(0, 100 - failed * 15)
-    struct_passed = sum(1 for c in checks if c["passed"])
-    struct_score = int(struct_passed / len(checks) * 100) if checks else 0
 
     overall = int(struct_score * 0.4 + safety_score * 0.6)
     import html as _html
@@ -1032,7 +1048,7 @@ th{{color:var(--muted);font-size:.75em;text-transform:uppercase}}
 <div class="card"><div class="score">{safety_score}</div><div style="color:var(--muted)">安全评分 /100（命中 {failed}/14 条红线）</div></div>
 <h2>结构检查</h2><table><tr><th>检查项</th><th>状态</th><th>得分</th><th>详情</th></tr>"""]
 
-    for c in checks:
+    for c in structure_checks:
         passed = c["passed"]
         badge_cls = "badge-pass" if passed else "badge-fail"
         badge_text = "✓ 通过" if passed else "✗ 失败"
